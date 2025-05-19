@@ -353,7 +353,7 @@ module nor2_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and2$ u_nand (
+            nor2$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .out(out[i])
@@ -371,7 +371,7 @@ module nor3_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and3$ u_nand (
+            nor3$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .in2(in2[i]),
@@ -391,7 +391,7 @@ module nor4_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and4$ u_nand (
+            nor4$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .in2(in2[i]),
@@ -410,7 +410,7 @@ module or2_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and2$ u_nand (
+            or2$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .out(out[i])
@@ -428,7 +428,7 @@ module or3_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and3$ u_nand (
+            or3$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .in2(in2[i]),
@@ -448,7 +448,7 @@ module or4_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and4$ u_nand (
+            or4$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .in2(in2[i]),
@@ -467,7 +467,7 @@ module xor2_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and2$ u_nand (
+            xor2$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .out(out[i])
@@ -484,7 +484,7 @@ module xnor2_nbit #(parameter N = 8) (
     genvar i;
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
-            and2$ u_nand (
+            xnor2$ u_nand (
                 .in0(in0[i]),
                 .in1(in1[i]),
                 .out(out[i])
@@ -501,7 +501,7 @@ module inv1_nbit #(parameter N = 8) (
     generate
         for (i = 0; i < N; i = i + 1) begin : gen_nand
             inv1$ u_nand (
-                .in0(in[i]),
+                .in(in[i]),
                 .out(out[i])
             );
         end
@@ -529,7 +529,7 @@ module black_cell (
     and2$ hi(.in0(p_kj),.in1(g_ij),.out(intermediate));
     or2$ hi1(.in0(g_kj),.in1(intermediate),.out(g_out));
 
-    and2$ hi(.in0(p_kj),.in1(p_kj),.out(p_out));
+    and2$ hi2(.in0(p_kj),.in1(p_kj),.out(p_out));
 endmodule
 
 module gray_cell (
@@ -619,12 +619,11 @@ module kogge_stone_adder #(parameter N = 4)(
 
     // Final sum computation
     generate
-        xor2_nbit #(N) hi(
-            .p(p),
-            .c(c),
-            .sum(sum)
+        xor2_nbit #(N+1) hi(
+            .in0(p),
+            .in1(c),
+            .out(sum)
         );
-        end
     endgenerate
 
     assign carry_out = c[N];
@@ -636,33 +635,32 @@ module main;
     parameter N = 4;
 
     // Inputs
-    reg [N-1:0] in0;
-    reg [N-1:0] in1;
-    reg [N-1:0] in2;
+    reg [N-1:0] a;
+    reg [N-1:0] b;
 
     // Output
-    wire [N-1:0] out;
+    wire [N-1:0] sum;
+    wire carry_out;
 
     // DUT (Device Under Test)
-    nand3_nbit #(N) hi(
-        .in0(in0),
-        .in1(in1),
-        .in2(in2),
-        .out(out)
+    kogge_stone_adder #(N) hi4(
+        .a(a),
+        .b(b),
+        .sum(sum),
+        .carry_out(carry_out)
     );
 
     initial begin
-        $display("Time\tin0\tin1 \tin2 \tout");
-        $monitor("%0t\t%b\t%b\t%b\t%b", $time, in0, in1, in2, out);
+        $display("Time\ta\tb \tsum \t cout");
+        $monitor("%0t\t%b\t%b\t%b\t%b", $time, a, b, sum, carry_out);
 
         // Apply test vectors
-        in0 = 16'b1011; in1 = 16'b1110; in2 = 16'b1101; #10;
-        in0 = 4'b1111; in1 = 4'b1111; #10;
-        in0 = 4'b1010; in1 = 4'b1100; #10;
-        in0 = 4'b1111; in1 = 4'b0000; #10;
-        in0 = 4'b0101; in1 = 4'b1010; #10;
+        a = 16'b1011; b = 16'b1110;
+        a = 4'b1111; b = 4'b1111; #10;
+        a = 4'b1010; b = 4'b1100; #10;
+        a = 4'b1111; b = 4'b0000; #10;
+        a = 4'b0101; b = 4'b1010; #10;
 
         $finish;
     end
 endmodule
-
