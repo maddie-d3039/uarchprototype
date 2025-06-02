@@ -11,7 +11,7 @@ void execute_stage();
 void memory_stage();
 void writeback_stage();
 
-#define control_store_rows 20
+#define control_store_rows 20 //arbitrary
 #define TRUE  1
 #define FALSE 0
 
@@ -47,12 +47,13 @@ int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 int EIP, EFLAGS;
 int oldEIP;
 
-long ibuffer_sector0L, ibuffer_sector1L, ibuffer_sector2L, ibuffer_sector3L;
-long ibuffer_sector0H, ibuffer_sector1H, ibuffer_sector2H, ibuffer_sector3H;
+#define cache_line_size 16
+int ibuffer[4][cache_line_size];
 int ibuffer_sector0_valid, ibuffer_sector1_valid, ibuffer_sector2_valid, ibuffer_sector3_valid;
 
+
 typedef struct PipeState_Entry_Struct{
-  long predecode_valid, predecode_instruction_lineH,predecode_instruction_lineL, predecode_EIP,
+  int predecode_valid, predecode_ibuffer[4][cache_line_size], predecode_EIP,
       decode_valid, decode_instruction_register, decode_instruction_length, decode_EIP,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
@@ -173,8 +174,6 @@ void idump(FILE * dumpsim_file) {
     printf("------------- PREDECODE   Latches --------------\n");
     printf("PD V          :  0x%04x\n", pipeline.predecode_valid );
     printf("\n");
-    printf("PD ILINEH      :  0x%04x\n", pipeline.predecode_instruction_lineH );
-    printf("PD ILINEL     :  0x%04x\n", pipeline.predecode_instruction_lineL );
     printf("PD EIP        :  %d\n", pipeline.predecode_EIP);
     printf("\n");
     
@@ -283,6 +282,56 @@ void init_memory() {
 void init_state() {
   memset(&pipeline, 0 ,sizeof(PipeState_Entry)); 
   memset(&new_pipeline, 0 , sizeof(PipeState_Entry));
+}
+
+void get_command(FILE * dumpsim_file) {
+    char buffer[20];
+    int start, stop, cycles;
+
+    printf("LC-3b-SIM> ");
+
+    scanf("%s", buffer);
+    printf("\n");
+
+    switch(buffer[0]) {
+    case 'G':
+    case 'g':
+	go();
+	break;
+
+    case 'M':
+    case 'm':
+	scanf("%i %i", &start, &stop);
+	mdump(dumpsim_file, start, stop);
+	break;
+
+    case '?':
+	help();
+	break;
+    case 'Q':
+    case 'q':
+	printf("Bye.\n");
+	exit(0);
+
+    case 'R':
+    case 'r':
+	if (buffer[1] == 'd' || buffer[1] == 'D')
+	    rdump(dumpsim_file);
+	else {
+	    scanf("%d", &cycles);
+	    run(cycles);
+	}
+	break;
+
+    case 'I':
+    case 'i':
+        idump(dumpsim_file);
+        break;
+	
+    default:
+	printf("Invalid Command\n");
+	break;
+    }
 }
 
 void load_program(char *program_filename) {
@@ -522,75 +571,7 @@ void predecode_stage(){
 }
 
 void fetch_stage(){
-    if(oldEIP^EIP!=0){
-        long instruction_lineL,instruction_lineH;
-        int offset = EIP & 0x3F;
-        if(offset<=1){
-            if(ibuffer_sector0_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-                instruction_lineL = ibuffer_sector0L;
-                instruction_lineH = ibuffer_sector0H;
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=15){
-            if(ibuffer_sector0_valid==0 || ibuffer_sector1_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-                //two possibilites: lineL split across sectors or lineH split across sectors
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=17){
-            if(ibuffer_sector1_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-                instruction_lineL = ibuffer_sector1L;
-                instruction_lineH = ibuffer_sector1H;
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=31){
-            if(ibuffer_sector1_valid==0 || ibuffer_sector2_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=33){
-            if(ibuffer_sector2_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-                instruction_lineL = ibuffer_sector2L;
-                instruction_lineH = ibuffer_sector2H;
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=47){
-            if(ibuffer_sector0_valid==2 || ibuffer_sector3_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=49){
-            if(ibuffer_sector3_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-                instruction_lineL = ibuffer_sector3L;
-                instruction_lineH = ibuffer_sector3H;
-                new_pipeline.predecode_valid=1;
-            }
-        }else if(offset<=63){
-            if(ibuffer_sector3_valid==0 || ibuffer_sector0_valid==0){
-                new_pipeline.predecode_valid=0;
-            }else{
-
-                new_pipeline.predecode_valid=1;
-            }
-        }
-        new_pipeline.predecode_instruction_lineH=instruction_lineH;
-        new_pipeline.predecode_instruction_lineL=instruction_lineL;
-    }else{
-        new_pipeline.predecode_valid=0;
-    }
+    
     //manage ibuffer, icache accesses
 
     //latch valid
