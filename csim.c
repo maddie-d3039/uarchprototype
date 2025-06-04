@@ -47,13 +47,15 @@ int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 int EIP, EFLAGS;
 int oldEIP;
 
+#define ibuffer_size 4
 #define cache_line_size 16
-int ibuffer[4][cache_line_size];
-int ibuffer_sector0_valid, ibuffer_sector1_valid, ibuffer_sector2_valid, ibuffer_sector3_valid;
+int ibuffer[ibuffer_size][cache_line_size];
+int ibuffer_valid[ibuffer_size];
 
 
 typedef struct PipeState_Entry_Struct{
-  int predecode_valid, predecode_ibuffer[4][cache_line_size], predecode_EIP,
+  int predecode_valid, predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
+      predecode_offset, predecode_current_sector, predecode_line_offset,
       decode_valid, decode_instruction_register, decode_instruction_length, decode_EIP,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
@@ -389,30 +391,6 @@ void initialize(char *ucode_filename, char *program_filename, int num_prog_files
     RUN_BIT = TRUE;
 }
 
-//functionality
-
-void icache_access(){
-
-}
-
-void dcache_access(){
-
-}
-
-void tlb_access(){
-
-}
-
-void busarb_logic(){
-
-}
-
-void translation_logic(){
-
-}
-
-//
-
 int main(int argc, char *argv[]) {
     FILE * dumpsim_file;
 
@@ -522,6 +500,48 @@ typedef struct ROB_Struct{
 } ROB;
 ROB rob;
 
+//functionality
+
+void busarb_handler(){
+
+}
+
+void translate_miss(int addr){
+    
+    busarb_handler();
+}
+
+
+void icache_access(int addr, int *read_word[cache_line_size], int *physical_tag){
+
+}
+
+void dcache_access(){
+
+}
+
+void tlb_access(int addr, int *physical_tag, int *tlb_hit){
+    int incoming_vpn = (addr>>12)&0x7;
+    for(int i =0;i<tlb_entries;i++){
+        if(tlb.entries[i].valid && tlb.entries[i].present){
+            if(incoming_vpn==tlb.entries[i].vpn){
+                *tlb_hit=1;
+                *physical_tag = tlb.entries[i].pfn;
+                return;
+            }
+        }
+    }
+    *tlb_hit=0;
+    translate_miss(addr);
+    return;
+}
+
+void tlb_write(){
+    
+}
+
+
+
 //stages
 
 int rob_broadcast_value, rob_broadcast_tag;
@@ -571,10 +591,110 @@ void predecode_stage(){
 }
 
 void fetch_stage(){
-    
-    //manage ibuffer, icache accesses
+    int offset = EIP & 0x3F;
+    int current_sector = offset/ibuffer_size;
+    int line_offset = offset%cache_line_size;
+    if(line_offset<=1){
+        if(ibuffer_valid[current_sector]==TRUE){
+            //latch predecode valid and ibuffer
+            new_pipeline.predecode_valid=TRUE;
+            new_pipeline.predecode_offset = offset;
+            new_pipeline.predecode_current_sector = current_sector;
+            new_pipeline.predecode_line_offset = line_offset;
+            for(int i =0;i<ibuffer_size;i++){
+                for(int j=0;j<cache_line_size;j++){
+                    new_pipeline.predecode_ibuffer[i][j]=ibuffer[i][j];
+                }
+            }
+        }else{
+            new_pipeline.predecode_valid=FALSE;
+        }
+    }else{
+        if((ibuffer_valid[current_sector]==TRUE)&&(ibuffer_valid[(current_sector+1)%ibuffer_size]==TRUE)){
+            //latch predecode valid and ibuffer
+            new_pipeline.predecode_valid=TRUE;
+            new_pipeline.predecode_offset = offset;
+            new_pipeline.predecode_current_sector = current_sector;
+            new_pipeline.predecode_line_offset = line_offset;
+            for(int i =0;i<ibuffer_size;i++){
+                for(int j=0;j<cache_line_size;j++){
+                    new_pipeline.predecode_ibuffer[i][j]=ibuffer[i][j];
+                }
+            }
+        }else{
+            new_pipeline.predecode_valid=FALSE;
+        }
+    }
 
-    //latch valid
+    int* dataBits, tlb_hit, icache_physical_tag, tlb_physical_tag;
+    if(ibuffer_valid[(current_sector)]==FALSE){
+        icache_access(EIP,dataBits[cache_line_size],icache_physical_tag);
+        tlb_access(EIP,tlb_physical_tag,tlb_hit);
+        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+            ibuffer_valid[current_sector]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[current_sector][i]=dataBits[i];
+            }
+        }
+        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
+            icache_access(EIP+16,dataBits[cache_line_size],icache_physical_tag);
+            tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
+            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+                ibuffer_valid[current_sector]=TRUE;
+                for(int i =0;i<cache_line_size;i++){
+                    ibuffer[current_sector][i]=dataBits[i];
+                }
+            }
+        }
+    }else if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
+        icache_access(EIP+16,dataBits[cache_line_size],icache_physical_tag);
+        tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
+        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+            ibuffer_valid[current_sector]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[current_sector][i]=dataBits[i];
+            }
+        }
+        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
+            icache_access(EIP+32,dataBits[cache_line_size],icache_physical_tag);
+            tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
+            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+                ibuffer_valid[current_sector]=TRUE;
+                for(int i =0;i<cache_line_size;i++){
+                    ibuffer[current_sector][i]=dataBits[i];
+                }
+            }
+        }
+    }else if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE){
+        icache_access(EIP+32,dataBits[cache_line_size],icache_physical_tag);
+        tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
+        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+            ibuffer_valid[current_sector]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[current_sector][i]=dataBits[i];
+            }
+        }
+        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
+            icache_access(EIP+48,dataBits[cache_line_size],icache_physical_tag);
+            tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
+            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+                ibuffer_valid[current_sector]=TRUE;
+                for(int i =0;i<cache_line_size;i++){
+                    ibuffer[current_sector][i]=dataBits[i];
+                }
+            }
+        }
+    }else if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE){
+        icache_access(EIP+48,dataBits[cache_line_size],icache_physical_tag);
+        tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
+        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+            ibuffer_valid[current_sector]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[current_sector][i]=dataBits[i];
+            }
+        }
+    }
+    
     new_pipeline.predecode_EIP = EIP;
     oldEIP = EIP;
 }
