@@ -642,6 +642,7 @@ void tlb_write(){
 
 int rob_broadcast_value, rob_broadcast_tag;
 void writeback_stage(){
+    // update to account for resteering/clearing on mispredicts
     for(int i =0;i<rob_size;i++){
         if((rob.entries[i].valid==1) && (rob.entries[i].old_bits==0) && (rob.entries[i].retired!=1) && (rob.entries[i].executed==1)){
             rob_broadcast_value = rob.entries[i].value;
