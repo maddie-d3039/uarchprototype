@@ -82,6 +82,11 @@ DRAM dram;
 //make data bus of 32 bits
 //make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
 
+#define bytes_on_data_bus 32
+typedef struct Data_Bus_Struct{
+
+} Data_Bus;
+
 //architectural registers
 
 int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
