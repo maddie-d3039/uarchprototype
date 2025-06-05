@@ -19,6 +19,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 #include <stdlib.h>
 #include <string.h>
 #include "BP.cpp"
+#include <cassert>
 
 void fetch_stage();
 void predecode_stage();
@@ -138,27 +139,34 @@ int SBR = 0x500;
 #define pte_size 4
 
 
-// Alias Table stuff
+// Number of entries per pool
+#define REGISTER_ALIAS_POOL_ENTRIES 64
+#define FLAG_ALIAS_POOL_ENTRIES     64
+#define MEMORY_ALIAS_POOL_ENTRIES   64
 
+// Base offsets for each alias range
+#define REGISTER_ALIAS_BASE  0
+#define FLAG_ALIAS_BASE      (REGISTER_ALIAS_BASE + REGISTER_ALIAS_POOL_ENTRIES)  // 64
+#define MEMORY_ALIAS_BASE    (FLAG_ALIAS_BASE     + FLAG_ALIAS_POOL_ENTRIES)      // 128
 
-#define register_alias_pool_entries 64
-#define flag_alias_pool_entries 64
-#define memory_alias_pool_entries 64
-
-// Struct for Register Alias Pool
+// --------------------------------------------------------------
+// Struct for Register Alias Pool (global IDs 0..63)
+// --------------------------------------------------------------
 struct RegisterAliasPool {
-    int aliases[register_alias_pool_entries];
-    bool valid[register_alias_pool_entries];
+    int  aliases[REGISTER_ALIAS_POOL_ENTRIES];
+    bool valid[REGISTER_ALIAS_POOL_ENTRIES];
 
     RegisterAliasPool() {
-        for (int i = 0; i < register_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        // Initialize each slot so aliases[i] = (base + i), and mark all as unused
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = REGISTER_ALIAS_BASE + i;  
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [0..63], or -1 if none left
     int get() {
-        for (int i = 0; i < register_alias_pool_entries; ++i) {
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -167,28 +175,41 @@ struct RegisterAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [0..63] or wasn't actually allocated, an assert fires.
     void free(int alias) {
-        // Safety check: ensure alias is within range
-        if (alias >= 0 && alias < register_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        // Compute local index
+        int index = alias - REGISTER_ALIAS_BASE;
+
+        // 1) Assert that alias is within this pool's global range
+        assert(index >= 0 && index < REGISTER_ALIAS_POOL_ENTRIES
+               && "RegisterAliasPool::free(): alias out of range!");
+
+        // 2) Assert that this slot was previously allocated (valid == true)
+        assert(valid[index] && "RegisterAliasPool::free(): alias was not allocated!");
+
+        // Finally, mark it free again
+        valid[index] = false;
     }
 };
 
-// Struct for Flag Alias Pool
+// --------------------------------------------------------------
+// Struct for Flag Alias Pool (global IDs 64..127)
+// --------------------------------------------------------------
 struct FlagAliasPool {
-    int aliases[flag_alias_pool_entries];
-    bool valid[flag_alias_pool_entries];
+    int  aliases[FLAG_ALIAS_POOL_ENTRIES];
+    bool valid[FLAG_ALIAS_POOL_ENTRIES];
 
     FlagAliasPool() {
-        for (int i = 0; i < flag_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = FLAG_ALIAS_BASE + i;  // 64 + i
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [64..127], or -1 if none left
     int get() {
-        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -197,27 +218,36 @@ struct FlagAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [64..127] or wasn't allocated, an assert fires.
     void free(int alias) {
-        if (alias >= 0 && alias < flag_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        int index = alias - FLAG_ALIAS_BASE;
+
+        assert(index >= 0 && index < FLAG_ALIAS_POOL_ENTRIES
+               && "FlagAliasPool::free(): alias out of range!");
+        assert(valid[index] && "FlagAliasPool::free(): alias was not allocated!");
+
+        valid[index] = false;
     }
 };
 
-// Struct for Memory Alias Pool
+// --------------------------------------------------------------
+// Struct for Memory Alias Pool (global IDs 128..191)
+// --------------------------------------------------------------
 struct MemoryAliasPool {
-    int aliases[memory_alias_pool_entries];
-    bool valid[memory_alias_pool_entries];
+    int  aliases[MEMORY_ALIAS_POOL_ENTRIES];
+    bool valid[MEMORY_ALIAS_POOL_ENTRIES];
 
     MemoryAliasPool() {
-        for (int i = 0; i < memory_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = MEMORY_ALIAS_BASE + i;  // 128 + i
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [128..191], or -1 if none left
     int get() {
-        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -226,14 +256,18 @@ struct MemoryAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [128..191] or wasn't allocated, an assert fires.
     void free(int alias) {
-        if (alias >= 0 && alias < memory_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        int index = alias - MEMORY_ALIAS_BASE;
+
+        assert(index >= 0 && index < MEMORY_ALIAS_POOL_ENTRIES
+               && "MemoryAliasPool::free(): alias out of range!");
+        assert(valid[index] && "MemoryAliasPool::free(): alias was not allocated!");
+
+        valid[index] = false;
     }
 };
-
-
 
 
 
