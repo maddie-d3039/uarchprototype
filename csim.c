@@ -32,20 +32,48 @@ int CONTROL_STORE[control_store_rows][num_control_store_bits];
 /***************************************************************/
 /* Main memory.                                                */
 /***************************************************************/
-/* MEMORY[A][0] stores the least significant byte of word at word address A
-   MEMORY[A][1] stores the most significant byte of word at word address A 
-   There are two write enable signals, one for each byte. WE0 is used for 
-   the least significant byte of a word. WE1 is used for the most significant 
-   byte of a word. */
 
-#define WORDS_IN_MEM    0x01000 
+#define WORDS_IN_MEM    0x01000
+//simple memory array 
 int MEMORY[WORDS_IN_MEM][4];
+
+//address mapping
+// RRR RRRR CCBkBk CCBoBBoB
+//actual structures
+#define byes_per_column 4
+#define columns_per_row 16
+#define rows_per_bank 128
+#define banks_in_DRAM 4
+//a column has 4 bytes
+typedef struct Column_Struct{
+    int bytes[byes_per_column];
+} Column;
+typedef struct Row_Struct{
+    Column columns[columns_per_row];
+} Row;
+typedef struct Bank_Struct{
+    Row rows[rows_per_bank];
+} Bank;
+typedef struct DRAM_Struct{
+    Bank banks[banks_in_DRAM];
+} DRAM;
+DRAM dram;
+
+//BUS
+
+//make data bus of 32 bits
+//make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
 
 //architectural registers
 
 int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 int EIP, EFLAGS;
 int oldEIP;
+
+
+//virtual memory specifications
+int SBR = 0x500;
+#define pte_size 4
 
 #define ibuffer_size 4
 #define cache_line_size 16
@@ -54,9 +82,9 @@ int ibuffer_valid[ibuffer_size];
 
 
 typedef struct PipeState_Entry_Struct{
-  int predecode_valid, predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
+  int predecode_valid,predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
       predecode_offset, predecode_current_sector, predecode_line_offset,
-      decode_valid, decode_instruction_register, decode_instruction_length, decode_EIP,
+      decode_valid, decode_instruction_register, decode_instruction_length, decode_EIP, decode_immSize,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
       agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp,
@@ -73,6 +101,7 @@ int RUN_BIT;
 
 void cycle(){
     new_pipeline = pipeline;
+    //stages
     writeback_stage();
     memory_stage();
     execute_stage();
@@ -81,6 +110,10 @@ void cycle(){
     decode_stage();
     predecode_stage();
     fetch_stage();
+    //memory structures
+    memory_controller();
+    bus_arbiter();
+    mshr_inserter();
     pipeline=new_pipeline;
     cycle_count++;
 }
@@ -420,18 +453,19 @@ int main(int argc, char *argv[]) {
 //address mapping: TTT TTT TTI IBO OOO
 #define dcache_banks 2
 #define dcache_sets 4
+#define dcache_ways 2
 typedef struct D$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
-        valid_way1, tag_way1, dirty_way2,
-        valid_way1, tag_way1, dirty_way3,
+        valid_way2, tag_way2, dirty_way2,
+        valid_way2, tag_way2, dirty_way3,
         lru 
 } D$_TagStoreEntry;
 typedef struct D$_TagStore_Struct{
     D$_TagStoreEntry dcache_tagstore[dcache_banks][dcache_sets];
 } D$_TagStore;
 typedef struct D$_DataStore_Struct{
-    long dcache_datastore[dcache_banks][dcache_sets][2];
+    long dcache_datastore[dcache_banks][dcache_sets][dcache_ways][cache_line_size];
 } D$_DataStore;
 typedef struct D$_Struct{
     D$_DataStore data;
@@ -444,6 +478,7 @@ D$ dcache;
 //address mapping: TTT TTT TII IBO OOO
 #define icache_banks 2
 #define icache_sets 8
+#define icache_ways 2
 typedef struct I$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
@@ -453,7 +488,7 @@ typedef struct I$_TagStore_Struct{
     I$_TagStoreEntry icache_tagstore[icache_banks][icache_sets];
 } I$_TagStore;
 typedef struct I$_DataStore_Struct{
-    long icache_datastore[icache_banks][icache_sets][2];
+    long icache_datastore[icache_banks][icache_sets][icache_ways][cache_line_size];
 } I$_DataStore;
 typedef struct I$_Struct{
     I$_DataStore data;
@@ -485,7 +520,20 @@ typedef struct RAT_MetadataEntry_Struct{
 //reservation_stations
 
 //mshr
-
+//entries are the actual entries waiting for the data to come back or waiting to send their address to the memory controller
+//pre-entries are what just got inserted this cycle and need to be sorted
+#define mshr_size 16
+#define pre_mshr_size 8
+typedef struct MSHR_Entry_Struct{
+    int valid, old_bits, origin, address, read_or_write, requested, sending_data;
+} MSHR_Entry;
+typedef struct MSHR{
+    MSHR_Entry entries[mshr_size];
+    MSHR_Entry pre_entries[pre_mshr_size];
+    int occupancy;
+    int pre_occupancy;
+} MSHR;
+MSHR mshr;
 //btb
 
 //SpecExeTracker
@@ -497,27 +545,55 @@ typedef struct ROB_Entry_Struct{
 } ROB_Entry;
 typedef struct ROB_Struct{
     ROB_Entry entries[rob_size];
+    int occupancy;
 } ROB;
 ROB rob;
 
 //functionality
 
-void busarb_handler(){
-
+void mshr_preinserter(int address, int origin, int read_or_write){
+    //origin 0 is icache
+    //origin 1 is dcache
+    //origin 2 is tlb
+    for(int i =0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid==FALSE){
+            mshr.pre_entries[i].valid=TRUE;
+            mshr.pre_entries[i].old_bits=mshr.pre_occupancy;
+            mshr.pre_occupancy++;
+            mshr.pre_entries[i].origin=origin;
+            mshr.pre_entries[i].address=address;
+            mshr.pre_entries[i].requested=FALSE;
+            mshr.pre_entries[i].sending_data=FALSE;
+            mshr.pre_entries[i].read_or_write = read_or_write;
+            return;
+        }
+    }
 }
 
-void translate_miss(int addr){
-    
-    busarb_handler();
+void translate_miss(int vpn){
+    int phys_addr = SBR + vpn * pte_size;
+    mshr_preinserter(phys_addr, 2, 0);
 }
 
 
-void icache_access(int addr, int *read_word[cache_line_size], int *physical_tag){
-
+void icache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], I$_TagStoreEntry *tag_metadata){
+    int bank = (addr>>3)&0x1;
+    int set = (addr>>4)&0x7;
+    *data_way0=icache.data.icache_datastore[bank][set][0];
+    *data_way1=icache.data.icache_datastore[bank][set][1];
+    *tag_metadata=icache.tag.icache_tagstore[bank][set];
+    return;
 }
 
-void dcache_access(){
-
+void dcache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], int *data_way2[cache_line_size],int *data_way3[cache_line_size], D$_TagStoreEntry *tag_metadata){
+    int bank = (addr>>3)&0x1;
+    int set = (addr>>4)&0x3;
+    *data_way0=dcache.data.dcache_datastore[bank][set][0];
+    *data_way1=dcache.data.dcache_datastore[bank][set][1];
+    *data_way2=dcache.data.dcache_datastore[bank][set][2];
+    *data_way3=dcache.data.dcache_datastore[bank][set][3];
+    *tag_metadata=dcache.tag.dcache_tagstore[bank][set];
+    return;
 }
 
 void tlb_access(int addr, int *physical_tag, int *tlb_hit){
@@ -532,7 +608,7 @@ void tlb_access(int addr, int *physical_tag, int *tlb_hit){
         }
     }
     *tlb_hit=0;
-    translate_miss(addr);
+    translate_miss(incoming_vpn);
     return;
 }
 
@@ -553,7 +629,7 @@ void writeback_stage(){
             rob.entries[i].valid=0;
             rob.entries[i].retired=1;
             for(int j =0;j<rob_size;j++){
-                if((rob.entries[j].valid==1) && (rob.entries[j].retired!=1)){
+                if((rob.entries[j].valid==TRUE) && (rob.entries[j].retired==FALSE)){
                     rob.entries[j].old_bits--;
                 }
             }
@@ -586,8 +662,79 @@ void decode_stage(){
 
 }
 
+int length;
 void predecode_stage(){
-
+    if(new_pipeline.predecode_valid){
+        new_pipeline.decode_immSize = 0;
+        unsigned char instruction[15];
+        int index = new_pipeline.predecode_EIP & 0x003F;
+        int part1 = -1;
+        int part2 = -1;
+        int len = 0;
+        unsigned char prefix = -1;
+        unsigned char opcode;
+        if(index < cache_line_size){
+            part1 = 0;
+        }
+        else if(index < 32){
+            part1 = 1;
+        }
+        else if(index < 48){
+            part1 = 2;
+        }
+        else if(index < 64){
+            part1 = 3;
+        }
+        if((index % 16) > 1){ // need next cache line as well if the offset is over 1
+            part2 = (part1 + 1) % 4;
+        }
+        index = index % 16;
+        int curPart = part1;
+        for(int i = 0; i < 15; i++){ //copy over instruction, using bytes from the second cache line if needed
+            instruction[i] = new_pipeline.predecode_ibuffer[curPart][index];
+            index++;
+            if(index > 15){
+                index = 0;
+                curPart = part2;
+            }
+        }
+        int instIndex = 0;
+        if(instruction[instIndex] == 0x66 || instruction[instIndex] == 0x67){ //check prefix
+            len++;
+            prefix = instruction[instIndex];
+            instIndex++;
+            opcode = instruction[instIndex];
+        }
+        else{
+            opcode = instruction[instIndex];
+        }
+        if(!(instruction[instIndex] == 0x05 || instruction[instIndex] == 0x04)){ // if an instruction tha requires a mod/rm byte
+            len+=2;
+            instIndex++;
+            unsigned char mod_rm = instruction[instIndex];
+            if((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0){ //uses SIB byte
+                len++;
+            }
+        }
+        else{
+            len++;
+        }
+        if(((opcode == 0x81) && prefix == 0x66) || ((opcode == 0x05) && prefix == 0x66)){ //determine size of immediates
+            len +=2;
+            new_pipeline.decode_immSize = 1;
+        }
+        else if(opcode == 0x81 || opcode == 0x05){
+            len+=4;
+        }
+        else if((opcode == 04) || (opcode == 80) || (opcode == 83)){ // all instructions with 1 byte immediate
+            len++;
+        }
+        new_pipeline.decode_instruction_length = len;
+        new_pipeline.decode_valid = 1;
+        new_pipeline.decode_instruction_register = instruction;
+        new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
+        length = len;
+    }
 }
 
 void fetch_stage(){
@@ -626,75 +773,155 @@ void fetch_stage(){
         }
     }
 
-    int* dataBits, tlb_hit, icache_physical_tag, tlb_physical_tag;
+    int bank_aligned=FALSE;
+    int bank_offset=FALSE;
+    int* dataBits0[cache_line_size],dataBits1[cache_line_size], tlb_hit, tlb_physical_tag;
+    I$_TagStoreEntry* icache_tag_metadata;
     if(ibuffer_valid[(current_sector)]==FALSE){
-        icache_access(EIP,dataBits[cache_line_size],icache_physical_tag);
+        icache_access(EIP,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP,tlb_physical_tag,tlb_hit);
-        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits[i];
+                ibuffer[current_sector][i]=dataBits0[i];
             }
-        }
-        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-            icache_access(EIP+16,dataBits[cache_line_size],icache_physical_tag);
-            tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
-            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-                ibuffer_valid[current_sector]=TRUE;
-                for(int i =0;i<cache_line_size;i++){
-                    ibuffer[current_sector][i]=dataBits[i];
-                }
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+            ibuffer_valid[current_sector]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[current_sector][i]=dataBits1[i];
             }
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
+            mshr_preinserter(EIP, 0);
         }
-    }else if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-        icache_access(EIP+16,dataBits[cache_line_size],icache_physical_tag);
+        bank_aligned=TRUE;
+    }
+    if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
+        icache_access(EIP+16,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
-        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-            ibuffer_valid[current_sector]=TRUE;
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits[i];
+                ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits0[i];
             }
-        }
-        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-            icache_access(EIP+32,dataBits[cache_line_size],icache_physical_tag);
-            tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
-            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-                ibuffer_valid[current_sector]=TRUE;
-                for(int i =0;i<cache_line_size;i++){
-                    ibuffer[current_sector][i]=dataBits[i];
-                }
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits1[i];
             }
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
+            mshr_preinserter(EIP+16, 0);
         }
-    }else if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE){
-        icache_access(EIP+32,dataBits[cache_line_size],icache_physical_tag);
+        bank_offset=TRUE;
+    }
+    if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE && bank_aligned==FALSE){
+        icache_access(EIP+32,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
-        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-            ibuffer_valid[current_sector]=TRUE;
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits[i];
+                ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits0[i];
             }
-        }
-        if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-            icache_access(EIP+48,dataBits[cache_line_size],icache_physical_tag);
-            tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
-            if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-                ibuffer_valid[current_sector]=TRUE;
-                for(int i =0;i<cache_line_size;i++){
-                    ibuffer[current_sector][i]=dataBits[i];
-                }
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits1[i];
             }
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
+            mshr_preinserter(EIP+32, 0);
         }
-    }else if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE){
-        icache_access(EIP+48,dataBits[cache_line_size],icache_physical_tag);
+        bank_aligned=TRUE;
+    }
+    if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE && bank_offset==FALSE){
+        icache_access(EIP+48,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
-        if((tlb_hit) && (icache_physical_tag==tlb_physical_tag)){
-            ibuffer_valid[current_sector]=TRUE;
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits[i];
+                ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits0[i];
             }
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+            ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
+            for(int i =0;i<cache_line_size;i++){
+                ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits1[i];
+            }
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
+            mshr_preinserter(EIP+48, 0);
         }
+        bank_offset=TRUE;
     }
     
     new_pipeline.predecode_EIP = EIP;
     oldEIP = EIP;
+    EIP +=length;
+    if(length>=(16-line_offset)){
+        ibuffer_valid[current_sector]=TRUE;
+    }
+}
+
+void mshr_inserter(){
+    //insert icache requests
+    for(int i = 0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==0){
+            for(int j =0;j<mshr_size;j++){
+                if(mshr.occupancy<mshr_size){
+                    if(mshr.entries[i].valid==FALSE){
+                        mshr.entries[i].valid=TRUE;
+                        mshr.entries[i].old_bits=mshr.occupancy;
+                        mshr.occupancy++;
+                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
+                        mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
+                        mshr.entries[i].requested=FALSE;
+                        mshr.entries[i].sending_data=FALSE;
+                    }
+                }
+            }
+        }
+    }
+    //insert dcache requests
+    for(int i = 0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==1){
+            for(int j =0;j<mshr_size;j++){
+                if(mshr.occupancy<mshr_size){
+                    if(mshr.entries[i].valid==FALSE){
+                        mshr.entries[i].valid=TRUE;
+                        mshr.entries[i].old_bits=mshr.occupancy;
+                        mshr.occupancy++;
+                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
+                        mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
+                        mshr.entries[i].requested=FALSE;
+                        mshr.entries[i].sending_data=FALSE;
+                    }
+                }
+            }
+        }
+    }
+    //insert tlb requests
+    for(int i = 0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==2){
+            for(int j =0;j<mshr_size;j++){
+                if(mshr.occupancy<mshr_size){
+                    if(mshr.entries[i].valid==FALSE){
+                        mshr.entries[i].valid=TRUE;
+                        mshr.entries[i].old_bits=mshr.occupancy;
+                        mshr.occupancy++;
+                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
+                        mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
+                        mshr.entries[i].requested=FALSE;
+                        mshr.entries[i].sending_data=FALSE;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void bus_arbiter(){
+
+}
+
+void memory_controller(){
+
 }
