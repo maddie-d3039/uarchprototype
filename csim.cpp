@@ -1,3 +1,20 @@
+// todo: 
+/*
+RAT
+FAT
+MAT
+ALIAS POOLS
+LOAD/STORE QUEUE
+BRANCH PREDICTOR
+SPECULATIVE EXECUTED BUFFER
+Remove read write from mshr and mshr handling functions and pre mshr entries
+ROB needs to account for speculatively executed so that wrong entries get cleared properly
+*/
+
+
+
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +32,8 @@ void memory_controller();
 void bus_arbiter();
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
+void deserializer_handler();
+
 #define control_store_rows 20 //arbitrary
 #define history_length 8;
 #define table_length 16;
@@ -40,7 +59,7 @@ int CONTROL_STORE[control_store_rows][num_control_store_bits];
 /***************************************************************/
 
 #define WORDS_IN_MEM    0x01000
-//simple memory array 
+//simple memory array but its obsolete, use the dram struct
 int MEMORY[WORDS_IN_MEM][4];
 
 //address mapping
@@ -65,10 +84,47 @@ typedef struct DRAM_Struct{
 } DRAM;
 DRAM dram;
 
+//mask helper functions
+
+int get_row_bits(int addr){
+    return (addr>>8)&0x7F;
+}
+
+int get_bank_bits(int addr){
+    return (addr>>4)&0x3;
+}
+
+int get_column_bits(int addr){
+    return ((addr>>6)&(0x3)<<2) + (addr>>2)&(0x3);
+}
+
+
 //BUS
 
 //make data bus of 32 bits
 //make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
+
+#define bytes_on_data_bus 32
+typedef struct Data_Bus_Struct{
+    int byte_wires[bytes_on_data_bus];
+} Data_Bus;
+
+Data_Bus data_bus;
+
+typedef struct Metadata_Bus_Struct{
+    int mshr_address;
+    int serializer_address;
+    int is_mshr_sending_addr;
+    int is_serializer_sending_data;
+    int is_serializer_sending_address;
+    int burst_counter;
+    int receive_enable;
+    int destination;
+    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store
+    int bank_destinations[banks_in_DRAM];
+}Metadata_Bus;
+
+Metadata_Bus metadata_bus;
 
 //architectural registers
 
@@ -80,6 +136,106 @@ int tempOffset;
 //virtual memory specifications
 int SBR = 0x500;
 #define pte_size 4
+
+
+// Alias Table stuff
+
+
+#define register_alias_pool_entries 64
+#define flag_alias_pool_entries 64
+#define memory_alias_pool_entries 64
+
+// Struct for Register Alias Pool
+struct RegisterAliasPool {
+    int aliases[register_alias_pool_entries];
+    bool valid[register_alias_pool_entries];
+
+    RegisterAliasPool() {
+        for (int i = 0; i < register_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < register_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        // Safety check: ensure alias is within range
+        if (alias >= 0 && alias < register_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+// Struct for Flag Alias Pool
+struct FlagAliasPool {
+    int aliases[flag_alias_pool_entries];
+    bool valid[flag_alias_pool_entries];
+
+    FlagAliasPool() {
+        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        if (alias >= 0 && alias < flag_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+// Struct for Memory Alias Pool
+struct MemoryAliasPool {
+    int aliases[memory_alias_pool_entries];
+    bool valid[memory_alias_pool_entries];
+
+    MemoryAliasPool() {
+        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        if (alias >= 0 && alias < memory_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+
+
+
 
 #define ibuffer_size 4
 #define cache_line_size 16
@@ -533,7 +689,7 @@ typedef struct RAT_MetadataEntry_Struct{
 #define mshr_size 16
 #define pre_mshr_size 8
 typedef struct MSHR_Entry_Struct{
-    int valid, old_bits, origin, address, read_or_write, requested, sending_data;
+    int valid, old_bits, origin, address, read_or_write, requested, sending_data, data_to_send[cache_line_size];
 } MSHR_Entry;
 typedef struct MSHR{
     MSHR_Entry entries[mshr_size];
@@ -630,6 +786,7 @@ void tlb_write(){
 
 int rob_broadcast_value, rob_broadcast_tag;
 void writeback_stage(){
+    // update to account for resteering/clearing on mispredicts
     for(int i =0;i<rob_size;i++){
         if((rob.entries[i].valid==1) && (rob.entries[i].old_bits==0) && (rob.entries[i].retired!=1) && (rob.entries[i].executed==1)){
             rob_broadcast_value = rob.entries[i].value;
@@ -945,9 +1102,44 @@ void mshr_inserter(){
 }
 
 void bus_arbiter(){
+    //approach: probe metadata bus and do casework
+    //search mshr for oldest entry
+    int start_age=0;
+    MSHR_Entry entry_to_send;
+    int found_entry = FALSE;
+    for(int i =0;i<mshr_size;i++){
+        if(mshr.entries[i].valid && !(mshr.entries[i].requested) && (mshr.entries[i].old_bits==start_age)){
+            if(metadata_bus.bank_status[get_bank_bits(mshr.entries[i].address)]==0){ 
+                //probing bank status on metadata bus to see if that bank is available
+                entry_to_send = mshr.entries[i];
+                found_entry=true;
+                break;
+            }else{
+                start_age++;
+                i=-1;
+            }
+        }
+    }
+    int is_data_bus_active = metadata_bus.is_serializer_sending_data && metadata_bus.receive_enable;
+    //INACTIVE MEMORY CASES
+    //case 1: MSHR has stuff, serializers dont
 
+    //case 2: MSHR doesnt have stuff, serializers do
+
+    //case 3: MSHR doesn't have stuff, serializers dont
+
+    //case 4: MSHR has stuff, serializers have stuff
+
+    //ACTIVE MEMORY CASES
 }
 
 void memory_controller(){
 
 }
+<<<<<<< HEAD
+
+void deserializer_handler(){
+
+}
+=======
+>>>>>>> 2ef23aa07e250d9420d151b285f53947786f80f3
