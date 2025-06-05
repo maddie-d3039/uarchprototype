@@ -667,11 +667,12 @@ void decode_stage(){
 
 }
 
+#define max_instruction_length 15
 int length;
 void predecode_stage(){
     if(new_pipeline.predecode_valid){
         new_pipeline.decode_immSize = 0;
-        unsigned char instruction[15];
+        unsigned char instruction[max_instruction_length];
         int index = new_pipeline.predecode_EIP & 0x003F;
         int part1 = -1;
         int part2 = -1;
@@ -736,7 +737,9 @@ void predecode_stage(){
         }
         new_pipeline.decode_instruction_length = len;
         new_pipeline.decode_valid = 1;
-        new_pipeline.decode_instruction_register = instruction;
+        for(int i =0;i<max_instruction_length;i++){
+            new_pipeline.decode_instruction_register[i] = instruction[i];
+        }
         new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
         length = len;
     }
