@@ -7,6 +7,7 @@ ALIAS POOLS
 LOAD/STORE QUEUE
 BRANCH PREDICTOR
 SPECULATIVE EXECUTED BUFFER
+Remove read write from mshr and mshr handling functions and pre mshr entries
 ROB needs to account for speculatively executed so that wrong entries get cleared properly
 */
 
@@ -29,6 +30,8 @@ void memory_controller();
 void bus_arbiter();
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
+void deserializer_handler();
+
 #define control_store_rows 20 //arbitrary
 #define TRUE  1
 #define FALSE 0
@@ -52,7 +55,7 @@ int CONTROL_STORE[control_store_rows][num_control_store_bits];
 /***************************************************************/
 
 #define WORDS_IN_MEM    0x01000
-//simple memory array 
+//simple memory array but its obsolete, use the dram struct
 int MEMORY[WORDS_IN_MEM][4];
 
 //address mapping
@@ -77,6 +80,21 @@ typedef struct DRAM_Struct{
 } DRAM;
 DRAM dram;
 
+//mask helper functions
+
+int get_row_bits(int addr){
+    return (addr>>8)&0x7F;
+}
+
+int get_bank_bits(int addr){
+    return (addr>>4)&0x3;
+}
+
+int get_column_bits(int addr){
+    return ((addr>>6)&(0x3)<<2) + (addr>>2)&(0x3);
+}
+
+
 //BUS
 
 //make data bus of 32 bits
@@ -84,15 +102,31 @@ DRAM dram;
 
 #define bytes_on_data_bus 32
 typedef struct Data_Bus_Struct{
-
+    int byte_wires[bytes_on_data_bus];
 } Data_Bus;
+
+Data_Bus data_bus;
+
+typedef struct Metadata_Bus_Struct{
+    int mshr_address;
+    int serializer_address;
+    int is_mshr_sending_addr;
+    int is_serializer_sending_data;
+    int is_serializer_sending_address;
+    int burst_counter;
+    int receive_enable;
+    int destination;
+    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store
+    int bank_destinations[banks_in_DRAM];
+}Metadata_Bus;
+
+Metadata_Bus metadata_bus;
 
 //architectural registers
 
 int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 int EIP, EFLAGS;
 int oldEIP;
-
 
 //virtual memory specifications
 int SBR = 0x500;
@@ -947,9 +981,41 @@ void mshr_inserter(){
 }
 
 void bus_arbiter(){
+    //approach: probe metadata bus and do casework
+    //search mshr for oldest entry
+    int start_age=0;
+    MSHR_Entry entry_to_send;
+    int found_entry = FALSE;
+    for(int i =0;i<mshr_size;i++){
+        if(mshr.entries[i].valid && !(mshr.entries[i].requested) && (mshr.entries[i].old_bits==start_age)){
+            if(metadata_bus.bank_status[get_bank_bits(mshr.entries[i].address)]==0){ 
+                //probing bank status on metadata bus to see if that bank is available
+                entry_to_send = mshr.entries[i];
+                found_entry=true;
+                break;
+            }else{
+                start_age++;
+                i=-1;
+            }
+        }
+    }
+    int is_data_bus_active = metadata_bus.is_serializer_sending_data && metadata_bus.receive_enable;
+    //INACTIVE MEMORY CASES
+    //case 1: MSHR has stuff, serializers dont
 
+    //case 2: MSHR doesnt have stuff, serializers do
+
+    //case 3: MSHR doesn't have stuff, serializers dont
+
+    //case 4: MSHR has stuff, serializers have stuff
+
+    //ACTIVE MEMORY CASES
 }
 
 void memory_controller(){
+
+}
+
+void deserializer_handler(){
 
 }
