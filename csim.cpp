@@ -10,7 +10,10 @@ void register_rename_stage();
 void execute_stage();
 void memory_stage();
 void writeback_stage();
-
+void memory_controller();
+void bus_arbiter();
+void mshr_preinserter(int, int, int);
+void mshr_inserter();
 #define control_store_rows 20 //arbitrary
 #define TRUE  1
 #define FALSE 0
@@ -84,13 +87,15 @@ int ibuffer_valid[ibuffer_size];
 typedef struct PipeState_Entry_Struct{
   int predecode_valid,predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
       predecode_offset, predecode_current_sector, predecode_line_offset,
-      decode_valid, decode_instruction_register, decode_instruction_length, decode_EIP, decode_immSize,
+      decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
       agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp,
       rr_valid, rr_operation, rr_updated_flags, 
       rr_op1_base, rr_op1_index, rr_op1_scale, rr_op1_disp, rr_op1_addr_mode,
-      rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode
+      rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode;
+
+    char decode_instruction_register[15];
 } PipeState_Entry;
 
 PipeState_Entry pipeline, new_pipeline;
@@ -215,7 +220,7 @@ void idump(FILE * dumpsim_file) {
     printf("------------- DECODE Latches --------------\n");
     printf("DC V        :  0x%04x\n", pipeline.decode_valid );
     printf("\n");
-    printf("DC IR       :  0x%04x\n", pipeline.decode_instruction_register );
+    // printf("DC IR       :  0x%04x\n", pipeline.decode_instruction_register );
     printf("DC IL       :  0x%04x\n", pipeline.decode_instruction_length );
     printf("DC EIP      :  %d\n", pipeline.decode_EIP);
     printf("\n");
@@ -341,7 +346,7 @@ void get_command(FILE * dumpsim_file) {
 	break;
 
     case '?':
-	help();
+	// help();
 	break;
     case 'Q':
     case 'q':
@@ -453,19 +458,19 @@ int main(int argc, char *argv[]) {
 //address mapping: TTT TTT TTI IBO OOO
 #define dcache_banks 2
 #define dcache_sets 4
-#define dcache_ways 2
+#define dcache_ways 4
 typedef struct D$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
         valid_way2, tag_way2, dirty_way2,
-        valid_way2, tag_way2, dirty_way3,
-        lru 
+        valid_way3, tag_way3, dirty_way3,
+        lru; 
 } D$_TagStoreEntry;
 typedef struct D$_TagStore_Struct{
     D$_TagStoreEntry dcache_tagstore[dcache_banks][dcache_sets];
 } D$_TagStore;
 typedef struct D$_DataStore_Struct{
-    long dcache_datastore[dcache_banks][dcache_sets][dcache_ways][cache_line_size];
+    int dcache_datastore[dcache_banks][dcache_sets][dcache_ways][cache_line_size];
 } D$_DataStore;
 typedef struct D$_Struct{
     D$_DataStore data;
@@ -482,13 +487,13 @@ D$ dcache;
 typedef struct I$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
-        lru 
+        lru; 
 } I$_TagStoreEntry;
 typedef struct I$_TagStore_Struct{
     I$_TagStoreEntry icache_tagstore[icache_banks][icache_sets];
 } I$_TagStore;
 typedef struct I$_DataStore_Struct{
-    long icache_datastore[icache_banks][icache_sets][icache_ways][cache_line_size];
+    int icache_datastore[icache_banks][icache_sets][icache_ways][cache_line_size];
 } I$_DataStore;
 typedef struct I$_Struct{
     I$_DataStore data;
@@ -500,7 +505,7 @@ I$ icache;
 //tlb
 #define tlb_entries 8
 typedef struct TLBEntry_Struct{
-    int valid, present, permissions, vpn, pfn
+    int valid, present, permissions, vpn, pfn;
 } TLBEntry;
 typedef struct TLB_Struct{
     TLBEntry entries[tlb_entries];
@@ -512,7 +517,7 @@ TLB tlb;
 
 //rat
 typedef struct RAT_MetadataEntry_Struct{
-    int valid, alias
+    int valid, alias;
 } RAT_MetadataEntry;
 
 //fat
@@ -541,7 +546,7 @@ MSHR mshr;
 //ROB
 #define rob_size 16
 typedef struct ROB_Entry_Struct{
-  int valid, old_bits, retired, executed, value, store_tag
+  int valid, old_bits, retired, executed, value, store_tag;
 } ROB_Entry;
 typedef struct ROB_Struct{
     ROB_Entry entries[rob_size];
@@ -579,8 +584,8 @@ void translate_miss(int vpn){
 void icache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], I$_TagStoreEntry *tag_metadata){
     int bank = (addr>>3)&0x1;
     int set = (addr>>4)&0x7;
-    *data_way0=icache.data.icache_datastore[bank][set][0];
-    *data_way1=icache.data.icache_datastore[bank][set][1];
+    *data_way0 = icache.data.icache_datastore[bank][set][0];
+    *data_way1 = icache.data.icache_datastore[bank][set][1];
     *tag_metadata=icache.tag.icache_tagstore[bank][set];
     return;
 }
@@ -588,11 +593,11 @@ void icache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cach
 void dcache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], int *data_way2[cache_line_size],int *data_way3[cache_line_size], D$_TagStoreEntry *tag_metadata){
     int bank = (addr>>3)&0x1;
     int set = (addr>>4)&0x3;
-    *data_way0=dcache.data.dcache_datastore[bank][set][0];
-    *data_way1=dcache.data.dcache_datastore[bank][set][1];
-    *data_way2=dcache.data.dcache_datastore[bank][set][2];
-    *data_way3=dcache.data.dcache_datastore[bank][set][3];
-    *tag_metadata=dcache.tag.dcache_tagstore[bank][set];
+    *data_way0 =dcache.data.dcache_datastore[bank][set][0];
+    *data_way1 =dcache.data.dcache_datastore[bank][set][1];
+    *data_way2 =dcache.data.dcache_datastore[bank][set][2];
+    *data_way3 =dcache.data.dcache_datastore[bank][set][3];
+    *tag_metadata =dcache.tag.dcache_tagstore[bank][set];
     return;
 }
 
@@ -775,77 +780,77 @@ void fetch_stage(){
 
     int bank_aligned=FALSE;
     int bank_offset=FALSE;
-    int* dataBits0[cache_line_size],dataBits1[cache_line_size], tlb_hit, tlb_physical_tag;
+    int* dataBits0[cache_line_size],dataBits1[cache_line_size], *tlb_hit, *tlb_physical_tag;
     I$_TagStoreEntry* icache_tag_metadata;
     if(ibuffer_valid[(current_sector)]==FALSE){
         icache_access(EIP,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits0[i];
+                ibuffer[current_sector][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[current_sector][i]=dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
-            mshr_preinserter(EIP, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
+            mshr_preinserter(EIP, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
         icache_access(EIP+16,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits0[i];
+                ibuffer[(current_sector+1)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
-            mshr_preinserter(EIP+16, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+16, 0, 0);
         }
         bank_offset=TRUE;
     }
     if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE && bank_aligned==FALSE){
         icache_access(EIP+32,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits0[i];
+                ibuffer[(current_sector+2)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
-            mshr_preinserter(EIP+32, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+32, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE && bank_offset==FALSE){
         icache_access(EIP+48,dataBits0,dataBits0,icache_tag_metadata);
         tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0==tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits0[i];
+                ibuffer[(current_sector+3)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1==tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0!=tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1!=tlb_physical_tag)))){
-            mshr_preinserter(EIP+48, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+48, 0, 0);
         }
         bank_offset=TRUE;
     }
