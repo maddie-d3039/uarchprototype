@@ -530,7 +530,7 @@ typedef struct RAT_MetadataEntry_Struct{
 #define mshr_size 16
 #define pre_mshr_size 8
 typedef struct MSHR_Entry_Struct{
-    int valid, old_bits, origin, address, read_or_write, requested, sending_data;
+    int valid, old_bits, origin, address, read_or_write, requested, sending_data, data_to_send[cache_line_size];
 } MSHR_Entry;
 typedef struct MSHR{
     MSHR_Entry entries[mshr_size];
