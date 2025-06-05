@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "BP.cpp"
 
 void fetch_stage();
 void predecode_stage();
@@ -15,6 +16,8 @@ void bus_arbiter();
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
 #define control_store_rows 20 //arbitrary
+#define history_length 8;
+#define table_length 16;
 #define TRUE  1
 #define FALSE 0
 
@@ -72,8 +75,8 @@ DRAM dram;
 int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 int EIP, EFLAGS;
 int oldEIP;
-
-
+int tempEIP; //used for branch resteering
+int tempOffset;
 //virtual memory specifications
 int SBR = 0x500;
 #define pte_size 4
@@ -83,28 +86,28 @@ int SBR = 0x500;
 int ibuffer[ibuffer_size][cache_line_size];
 int ibuffer_valid[ibuffer_size];
 
-
 typedef struct PipeState_Entry_Struct{
   int predecode_valid,predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
       predecode_offset, predecode_current_sector, predecode_line_offset,
       decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
-      agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp,
+      agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset,
       rr_valid, rr_operation, rr_updated_flags, 
       rr_op1_base, rr_op1_index, rr_op1_scale, rr_op1_disp, rr_op1_addr_mode,
       rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode;
 
     char decode_instruction_register[15];
+    char agbr_instruction_register[15];
 } PipeState_Entry;
 
 PipeState_Entry pipeline, new_pipeline;
-
+BP* branch_predictor = new BP();
 int cycle_count;
 
 int RUN_BIT;
 
-void cycle(){
+void cycle(){ 
     new_pipeline = pipeline;
     //stages
     writeback_stage();
@@ -660,7 +663,15 @@ void register_rename_stage(){
 }
 
 void addgen_branch_stage(){
-
+if(new_pipeline.agbr_valid && need_prediction){ //add control store bit for this
+    bool prediction = branch_predictor->predict();
+     tempEIP = EIP; //store this EIP in case need to resteer
+     tempOffset = new_pipeline.agen_offset;
+    if(prediction){
+        EIP = NEIP + new_pipeline.agen_offset; 
+    }
+    //something to let us know we are spec executing  
+}
 }
 
 void decode_stage(){
@@ -720,6 +731,13 @@ void predecode_stage(){
             unsigned char mod_rm = instruction[instIndex];
             if((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0){ //uses SIB byte
                 len++;
+            }
+            int displacement = mod_rm & 0b11000000;
+            if(displacement == 1){
+                len++;
+            }
+            if(displacement == 2){
+                len+=2;
             }
         }
         else{
