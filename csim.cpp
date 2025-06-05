@@ -1,3 +1,18 @@
+// todo: 
+/*
+RAT
+FAT
+MAT
+ALIAS POOLS
+LOAD/STORE QUEUE
+BRANCH PREDICTOR
+SPECULATIVE EXECUTED BUFFER
+ROB needs to account for speculatively executed so that wrong entries get cleared properly
+*/
+
+
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
