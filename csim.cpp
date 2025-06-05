@@ -13,6 +13,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 
 
 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +98,106 @@ int oldEIP;
 //virtual memory specifications
 int SBR = 0x500;
 #define pte_size 4
+
+
+// Alias Table stuff
+
+
+#define register_alias_pool_entries 64
+#define flag_alias_pool_entries 64
+#define memory_alias_pool_entries 64
+
+// Struct for Register Alias Pool
+struct RegisterAliasPool {
+    int aliases[register_alias_pool_entries];
+    bool valid[register_alias_pool_entries];
+
+    RegisterAliasPool() {
+        for (int i = 0; i < register_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < register_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        // Safety check: ensure alias is within range
+        if (alias >= 0 && alias < register_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+// Struct for Flag Alias Pool
+struct FlagAliasPool {
+    int aliases[flag_alias_pool_entries];
+    bool valid[flag_alias_pool_entries];
+
+    FlagAliasPool() {
+        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        if (alias >= 0 && alias < flag_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+// Struct for Memory Alias Pool
+struct MemoryAliasPool {
+    int aliases[memory_alias_pool_entries];
+    bool valid[memory_alias_pool_entries];
+
+    MemoryAliasPool() {
+        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+            aliases[i] = i;
+            valid[i] = false;
+        }
+    }
+
+    int get() {
+        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+            if (!valid[i]) {
+                valid[i] = true;
+                return aliases[i];
+            }
+        }
+        return -1;
+    }
+
+    void free(int alias) {
+        if (alias >= 0 && alias < memory_alias_pool_entries) {
+            valid[alias] = false;
+        }
+    }
+};
+
+
+
+
 
 #define ibuffer_size 4
 #define cache_line_size 16
