@@ -767,7 +767,7 @@ typedef struct StoreQueue_Struct{
 //note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
 #define num_entries_per_RS 8
 typedef struct ReservationStation_Entry_Struct{
-    int store_tag, entry_valid;
+    int store_tag, entry_valid, updated_flags;
     //operand 1
     int op1_mem_alias, op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
     int op1_index_valid, op1_index_tag, op1_index_val, op1_scale, op1_imm;
