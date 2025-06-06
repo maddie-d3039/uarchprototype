@@ -25,7 +25,7 @@ void memory_stage();
 void writeback_stage();
 void memory_controller();
 void bus_arbiter();
-void mshr_preinserter(int, int, int);
+void mshr_preinserter(int, int);
 void mshr_inserter();
 void serializer_handler();
 void serializer_inserter();
@@ -873,7 +873,7 @@ void mshr_preinserter(int address, int origin){
 
 void translate_miss(int vpn){
     int phys_addr = SBR + vpn * pte_size;
-    mshr_preinserter(phys_addr, 2, 0);
+    mshr_preinserter(phys_addr, 2);
 }
 
 
@@ -1114,7 +1114,7 @@ void fetch_stage(){
                 ibuffer[current_sector][i]=dataBits1[i];
             }
         }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP, 0, 0);
+            mshr_preinserter(EIP, 0);
         }
         bank_aligned=TRUE;
     }
@@ -1132,7 +1132,7 @@ void fetch_stage(){
                 ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits1[i];
             }
         }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+16, 0, 0);
+            mshr_preinserter(EIP+16, 0);
         }
         bank_offset=TRUE;
     }
@@ -1150,7 +1150,7 @@ void fetch_stage(){
                 ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits1[i];
             }
         }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+32, 0, 0);
+            mshr_preinserter(EIP+32, 0);
         }
         bank_aligned=TRUE;
     }
@@ -1168,7 +1168,7 @@ void fetch_stage(){
                 ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits1[i];
             }
         }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+48, 0, 0);
+            mshr_preinserter(EIP+48, 0);
         }
         bank_offset=TRUE;
     }
@@ -1231,6 +1231,8 @@ void mshr_inserter(){
         }
     }
 }
+
+
 
 void bus_arbiter(){
     //approach: probe metadata bus and do casework
