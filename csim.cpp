@@ -1,19 +1,14 @@
 // todo: 
 /*
-RAT
-FAT
-MAT
-ALIAS POOLS
+RAT - done (sahil)
+FAT - done (sahil)
+MAT - this is just the LSQ (sahil)
 LOAD/STORE QUEUE
 BRANCH PREDICTOR
-SPECULATIVE EXECUTED BUFFER
-Remove read write from mshr and mshr handling functions and pre mshr entries
-ROB needs to account for speculatively executed so that wrong entries get cleared properly
+SPECULATIVE EXECUTED BUFFER - done (sahil)
+Remove read write from mshr and mshr handling functions and pre mshr entries - done (sahil)
+ROB needs to account for speculatively executed so that wrong entries get cleared properly - done (sahil)
 */
-
-
-
-
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +27,10 @@ void memory_controller();
 void bus_arbiter();
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
+void serializer_handler();
+void serializer_inserter();
 void deserializer_handler();
+void deserializer_inserter();
 
 #define control_store_rows 20 //arbitrary
 #define history_length 8;
@@ -104,7 +102,7 @@ int get_column_bits(int addr){
 //make data bus of 32 bits
 //make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
 
-#define bytes_on_data_bus 32
+#define bytes_on_data_bus 4
 typedef struct Data_Bus_Struct{
     int byte_wires[bytes_on_data_bus];
 } Data_Bus;
@@ -116,49 +114,100 @@ typedef struct Metadata_Bus_Struct{
     int serializer_address;
     int is_mshr_sending_addr;
     int is_serializer_sending_data;
-    int is_serializer_sending_address;
     int burst_counter;
     int receive_enable;
+    int origin;
     int destination;
-    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store
+    int deserializer_full;
+    int deserializer_target;
+    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 waiting to send loaded data
     int bank_destinations[banks_in_DRAM];
 }Metadata_Bus;
 
 Metadata_Bus metadata_bus;
 
+#define bits_in_word 32
+
 //architectural registers
 
-int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
-int EIP, EFLAGS;
+//rat and reg file
+enum Registers{
+    EAX_idx, EBX_idx, ECX_idx, EDX_idx, ESI_idx, EDI_idx, EBP_idx, ESP_idx, GPR_Count
+} Registers;
+typedef struct Register_File_Struct{
+    int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
+} Register_File;
+
+typedef struct RAT_MetadataEntry_Struct{
+    int valid, alias;
+} RAT_MetadataEntry;
+typedef struct RAT_Struct{
+    Register_File regfile;
+    RAT_MetadataEntry metadata[GPR_Count];
+} RAT;
+
+RAT rat;
+
+//fat and flag file
+enum Flags{
+    Carry_idx, Parity_idx, Auxiliary_Carry_idx, Zero_idx, Sign_idx, Trap_idx, Interrupt_enable_idx, Direction_idx, 
+    Overflow_idx, IO_Privilege_level_idx, Nester_task_flag_idx, Mode_flag_idx, Resume_idx, Alignnment_check_idx, Flag_Count
+} Flags; //I didn't include some virtual process flags because I don't think we need them? Correct me if I'm wrong
+typedef struct Flag_File_Struct{
+    int Carry, Parity, Auxiliary_Carry, Zero, Sign, Trap, Interrupt_enable, Direction, 
+    Overflow, IO_Privilege_level, Nester_task_flag, Mode_flag, Resume, Alignnment_check, Flag_Count;
+} Flag_File;
+typedef struct FAT_MetadataEntry_Struct{
+    int valid, alias;
+} FAT_MetadataEntry;
+typedef struct FAT_Struct{
+    Flag_File flagfile;
+    FAT_MetadataEntry metadata[Flag_Count];
+} FAT;
+
+FAT fat;
+
+
+int EIP;
 int oldEIP;
 int tempEIP; //used for branch resteering
 int tempOffset;
+//used for bus arbiter
+int serializer_entry_to_send;
+
 //virtual memory specifications
 int SBR = 0x500;
 #define pte_size 4
 
 
-// Alias Table stuff
+// Number of entries per pool
+#define REGISTER_ALIAS_POOL_ENTRIES 64
+#define FLAG_ALIAS_POOL_ENTRIES     64
+#define MEMORY_ALIAS_POOL_ENTRIES   64
 
+// Base offsets for each alias range
+#define REGISTER_ALIAS_BASE  0
+#define FLAG_ALIAS_BASE      (REGISTER_ALIAS_BASE + REGISTER_ALIAS_POOL_ENTRIES)  // 64
+#define MEMORY_ALIAS_BASE    (FLAG_ALIAS_BASE     + FLAG_ALIAS_POOL_ENTRIES)      // 128
 
-#define register_alias_pool_entries 64
-#define flag_alias_pool_entries 64
-#define memory_alias_pool_entries 64
-
-// Struct for Register Alias Pool
+// --------------------------------------------------------------
+// Struct for Register Alias Pool (global IDs 0..63)
+// --------------------------------------------------------------
 struct RegisterAliasPool {
-    int aliases[register_alias_pool_entries];
-    bool valid[register_alias_pool_entries];
+    int  aliases[REGISTER_ALIAS_POOL_ENTRIES];
+    bool valid[REGISTER_ALIAS_POOL_ENTRIES];
 
     RegisterAliasPool() {
-        for (int i = 0; i < register_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        // Initialize each slot so aliases[i] = (base + i), and mark all as unused
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = REGISTER_ALIAS_BASE + i;  
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [0..63], or -1 if none left
     int get() {
-        for (int i = 0; i < register_alias_pool_entries; ++i) {
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -167,28 +216,41 @@ struct RegisterAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [0..63] or wasn't actually allocated, an assert fires.
     void free(int alias) {
-        // Safety check: ensure alias is within range
-        if (alias >= 0 && alias < register_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        // Compute local index
+        int index = alias - REGISTER_ALIAS_BASE;
+
+        // 1) Assert that alias is within this pool's global range
+        assert(index >= 0 && index < REGISTER_ALIAS_POOL_ENTRIES
+               && "RegisterAliasPool::free(): alias out of range!");
+
+        // 2) Assert that this slot was previously allocated (valid == true)
+        assert(valid[index] && "RegisterAliasPool::free(): alias was not allocated!");
+
+        // Finally, mark it free again
+        valid[index] = false;
     }
 };
 
-// Struct for Flag Alias Pool
+// --------------------------------------------------------------
+// Struct for Flag Alias Pool (global IDs 64..127)
+// --------------------------------------------------------------
 struct FlagAliasPool {
-    int aliases[flag_alias_pool_entries];
-    bool valid[flag_alias_pool_entries];
+    int  aliases[FLAG_ALIAS_POOL_ENTRIES];
+    bool valid[FLAG_ALIAS_POOL_ENTRIES];
 
     FlagAliasPool() {
-        for (int i = 0; i < flag_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = FLAG_ALIAS_BASE + i;  // 64 + i
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [64..127], or -1 if none left
     int get() {
-        for (int i = 0; i < flag_alias_pool_entries; ++i) {
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -197,27 +259,36 @@ struct FlagAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [64..127] or wasn't allocated, an assert fires.
     void free(int alias) {
-        if (alias >= 0 && alias < flag_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        int index = alias - FLAG_ALIAS_BASE;
+
+        assert(index >= 0 && index < FLAG_ALIAS_POOL_ENTRIES
+               && "FlagAliasPool::free(): alias out of range!");
+        assert(valid[index] && "FlagAliasPool::free(): alias was not allocated!");
+
+        valid[index] = false;
     }
 };
 
-// Struct for Memory Alias Pool
+// --------------------------------------------------------------
+// Struct for Memory Alias Pool (global IDs 128..191)
+// --------------------------------------------------------------
 struct MemoryAliasPool {
-    int aliases[memory_alias_pool_entries];
-    bool valid[memory_alias_pool_entries];
+    int  aliases[MEMORY_ALIAS_POOL_ENTRIES];
+    bool valid[MEMORY_ALIAS_POOL_ENTRIES];
 
     MemoryAliasPool() {
-        for (int i = 0; i < memory_alias_pool_entries; ++i) {
-            aliases[i] = i;
-            valid[i] = false;
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
+            aliases[i] = MEMORY_ALIAS_BASE + i;  // 128 + i
+            valid[i]   = false;
         }
     }
 
+    // Returns one free alias in [128..191], or -1 if none left
     int get() {
-        for (int i = 0; i < memory_alias_pool_entries; ++i) {
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
             if (!valid[i]) {
                 valid[i] = true;
                 return aliases[i];
@@ -226,15 +297,18 @@ struct MemoryAliasPool {
         return -1;
     }
 
+    // Frees a previously allocated alias.
+    // If `alias` is out of [128..191] or wasn't allocated, an assert fires.
     void free(int alias) {
-        if (alias >= 0 && alias < memory_alias_pool_entries) {
-            valid[alias] = false;
-        }
+        int index = alias - MEMORY_ALIAS_BASE;
+
+        assert(index >= 0 && index < MEMORY_ALIAS_POOL_ENTRIES
+               && "MemoryAliasPool::free(): alias out of range!");
+        assert(valid[index] && "MemoryAliasPool::free(): alias was not allocated!");
+
+        valid[index] = false;
     }
 };
-
-
-
 
 
 #define ibuffer_size 4
@@ -278,6 +352,8 @@ void cycle(){
     memory_controller();
     bus_arbiter();
     mshr_inserter();
+    serializer_handler();
+    deserializer_handler();
     pipeline=new_pipeline;
     cycle_count++;
 }
@@ -341,9 +417,9 @@ void rdump(FILE * dumpsim_file) {
     printf("-------------------------------------\n");
     printf("Cycle Count : %d\n", cycle_count);
     printf("PC          : 0x%04x\n", EIP);
-    printf("Flags: %d\n", EFLAGS);
+    //printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     printf("Registers:\n");
-	printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);
+	//printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
     printf("\n");
 
     /* dump the state information into the dumpsim file */
@@ -351,9 +427,9 @@ void rdump(FILE * dumpsim_file) {
     fprintf(dumpsim_file, "-------------------------------------\n");
     fprintf(dumpsim_file, "Cycle Count : %d\n", cycle_count);
     fprintf(dumpsim_file, "PC          : 0x%04x\n", EIP);
-    fprintf(dumpsim_file, "Flags: %d\n", EFLAGS);
+    //fprintf(dumpsim_file, "Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     fprintf(dumpsim_file, "Registers:\n");
-	fprintf(dumpsim_file, "EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);
+	//fprintf(dumpsim_file, "EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
     fprintf(dumpsim_file, "\n");
     fflush(dumpsim_file);
 }
@@ -365,9 +441,9 @@ void idump(FILE * dumpsim_file) {
     printf("-------------------------------------\n");
     printf("Cycle Count     : %d\n", cycle_count);
     printf("PC              : 0x%04x\n", EIP);
-    printf("Flags: %d\n", EFLAGS);
+    //printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     printf("Registers:\n");
-	printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);
+	//printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP); //Need to fix this, currently dont have registers printing
     printf("\n");
 
     printf("------------- PREDECODE   Latches --------------\n");
@@ -672,16 +748,45 @@ typedef struct TLB_Struct{
 
 TLB tlb;
 
-//lsq
+//load queue
+typedef struct LoadQueue_Entry_Struct{
 
-//rat
-typedef struct RAT_MetadataEntry_Struct{
-    int valid, alias;
-} RAT_MetadataEntry;
+} LoadQueue_Entry;
+typedef struct LoadQueue_Struct{
 
-//fat
+} LoadQueue;
+//store queue
+typedef struct StoreQueue_Entry_Struct{
+
+} StoreQueue_Entry;
+typedef struct StoreQueue_Struct{
+
+} StoreQueue;
 
 //reservation_stations
+//note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
+#define num_entries_per_RS 8
+typedef struct ReservationStation_Entry_Struct{
+    int store_tag, entry_valid;
+    //operand 1
+    int op1_mem_alias, op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
+    int op1_index_valid, op1_index_tag, op1_index_val, op1_scale, op1_imm;
+    int op1_ready, op1_combined_val, op1_load_alias;
+    int op1_valid, op1_data;
+    //operand 2
+    int op2_mem_alias, op2_addr_mode, op2_base_valid, op2_base_tag, op2_base_val;
+    int op2_index_valid, op2_index_tag, op2_index_val, op2_scale, op2_imm;
+    int op2_ready, op2_combined_val, op2_load_alias;
+    int op2_valid, op2_data;
+    //I don't think you need the result in the entry? Correct me if I'm wrong
+} ReservationStation_Entry;
+
+typedef struct ReservationStation_Struct{
+    ReservationStation_Entry entries[num_entries_per_RS];
+} ReservationStation;
+
+ReservationStation add_RS;
+ReservationStation or_RS;
 
 //mshr
 //entries are the actual entries waiting for the data to come back or waiting to send their address to the memory controller
@@ -689,7 +794,7 @@ typedef struct RAT_MetadataEntry_Struct{
 #define mshr_size 16
 #define pre_mshr_size 8
 typedef struct MSHR_Entry_Struct{
-    int valid, old_bits, origin, address, read_or_write, requested, sending_data, data_to_send[cache_line_size];
+    int valid, old_bits, origin, address;
 } MSHR_Entry;
 typedef struct MSHR{
     MSHR_Entry entries[mshr_size];
@@ -700,12 +805,47 @@ typedef struct MSHR{
 MSHR mshr;
 //btb
 
-//SpecExeTracker
+//Speculative Execution Tracker
+#define spec_exe_tracker_size 4
+typedef struct SpecExe_Entry_Struct{
+    int valid, not_taken_target, taken_target, prediction, flag_alias;
+} SpecExe_Entry;
+typedef struct SpecExeTracker_Struct{
+    SpecExe_Entry entries[spec_exe_tracker_size];
+} SpecExeTracker;
+
+//Seralizers
+#define num_serializer_entries 8
+typedef struct Serializer_Entry_Struct{
+    int valid, old_bits, sending_data;
+    int data[cache_line_size], address;
+} Serializer_Entry;
+
+typedef struct Serializer_Struct{
+    Serializer_Entry entries[num_serializer_entries];
+    int occupancy;
+} Serializer;  
+
+Serializer serializer;
+
+//Deserializers
+#define num_deserializer_entries 8
+typedef struct Deserializer_Entry_Struct{
+    int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
+    int data[cache_line_size], address;
+} Deserializer_Entry;
+
+typedef struct Deserializer_Struct{
+    Deserializer_Entry entries[num_deserializer_entries];
+    int occupancy;
+} Deserializer;
+
+Deserializer deserializer;
 
 //ROB
 #define rob_size 16
 typedef struct ROB_Entry_Struct{
-  int valid, old_bits, retired, executed, value, store_tag;
+  int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
 } ROB_Entry;
 typedef struct ROB_Struct{
     ROB_Entry entries[rob_size];
@@ -715,7 +855,7 @@ ROB rob;
 
 //functionality
 
-void mshr_preinserter(int address, int origin, int read_or_write){
+void mshr_preinserter(int address, int origin){
     //origin 0 is icache
     //origin 1 is dcache
     //origin 2 is tlb
@@ -726,9 +866,6 @@ void mshr_preinserter(int address, int origin, int read_or_write){
             mshr.pre_occupancy++;
             mshr.pre_entries[i].origin=origin;
             mshr.pre_entries[i].address=address;
-            mshr.pre_entries[i].requested=FALSE;
-            mshr.pre_entries[i].sending_data=FALSE;
-            mshr.pre_entries[i].read_or_write = read_or_write;
             return;
         }
     }
@@ -789,6 +926,9 @@ void writeback_stage(){
     // update to account for resteering/clearing on mispredicts
     for(int i =0;i<rob_size;i++){
         if((rob.entries[i].valid==1) && (rob.entries[i].old_bits==0) && (rob.entries[i].retired!=1) && (rob.entries[i].executed==1)){
+            if(rob.entries[i].speculative==TRUE){
+                return;
+            }
             rob_broadcast_value = rob.entries[i].value;
             rob_broadcast_tag = rob.entries[i].store_tag;
             rob.entries[i].valid=0;
@@ -1053,9 +1193,6 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
-                        mshr.entries[i].requested=FALSE;
-                        mshr.entries[i].sending_data=FALSE;
                     }
                 }
             }
@@ -1072,9 +1209,6 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
-                        mshr.entries[i].requested=FALSE;
-                        mshr.entries[i].sending_data=FALSE;
                     }
                 }
             }
@@ -1091,9 +1225,6 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].read_or_write=mshr.pre_entries[j].read_or_write;
-                        mshr.entries[i].requested=FALSE;
-                        mshr.entries[i].sending_data=FALSE;
                     }
                 }
             }
@@ -1103,43 +1234,119 @@ void mshr_inserter(){
 
 void bus_arbiter(){
     //approach: probe metadata bus and do casework
+    
+    if(metadata_bus.burst_counter==3){
+        metadata_bus.is_serializer_sending_data=FALSE;
+    }
+
     //search mshr for oldest entry
     int start_age=0;
-    MSHR_Entry entry_to_send;
-    int found_entry = FALSE;
+    int mshr_entry_to_send;
+    int found_mshr_entry = FALSE;
     for(int i =0;i<mshr_size;i++){
-        if(mshr.entries[i].valid && !(mshr.entries[i].requested) && (mshr.entries[i].old_bits==start_age)){
+        if((mshr.entries[i].valid==TRUE) && (mshr.entries[i].old_bits==start_age)){
             if(metadata_bus.bank_status[get_bank_bits(mshr.entries[i].address)]==0){ 
                 //probing bank status on metadata bus to see if that bank is available
-                entry_to_send = mshr.entries[i];
-                found_entry=true;
+                mshr_entry_to_send = i;
+                found_mshr_entry=TRUE;
                 break;
             }else{
+                //if it isn't available check the next oldest mshr entry
                 start_age++;
                 i=-1;
             }
         }
     }
-    int is_data_bus_active = metadata_bus.is_serializer_sending_data && metadata_bus.receive_enable;
-    //INACTIVE MEMORY CASES
-    //case 1: MSHR has stuff, serializers dont
+    int found_serializer_entry = FALSE;
+    int is_data_bus_active = metadata_bus.is_serializer_sending_data || metadata_bus.receive_enable;
+    if(is_data_bus_active==FALSE){
+        for(int i =0;i<num_serializer_entries;i++){
+            if((serializer.entries[i].valid==TRUE) && (serializer.entries[i].old_bits==0) && (serializer.entries[i].sending_data!=TRUE)){
+                serializer_entry_to_send=i;
+                found_serializer_entry=TRUE;
+                break;
+            }
+        }    
+    }
+    //considerations already accounted for: busy banks
+    //considerations accounted for here: full deserializers
+    //active when serializer has stuff it can send; initiates bursts
+    if(found_serializer_entry==TRUE && metadata_bus.deserializer_full==FALSE){
+        metadata_bus.serializer_address=serializer.entries[serializer_entry_to_send].address;
+        metadata_bus.burst_counter=0;
+        metadata_bus.is_serializer_sending_data=TRUE;
+        
+        data_bus.byte_wires[0]=serializer.entries[serializer_entry_to_send].data[0];
+        data_bus.byte_wires[1]=serializer.entries[serializer_entry_to_send].data[1];
+        data_bus.byte_wires[2]=serializer.entries[serializer_entry_to_send].data[2];
+        data_bus.byte_wires[3]=serializer.entries[serializer_entry_to_send].data[3];
+        return;
+    }
+    //active when MSHR has stuff it can send
+    if(found_mshr_entry==TRUE){
+        metadata_bus.mshr_address=mshr.entries[mshr_entry_to_send].address;
+        metadata_bus.is_mshr_sending_addr=TRUE;
+        //destination stuff
+        metadata_bus.origin = mshr.entries[mshr_entry_to_send].origin;
 
-    //case 2: MSHR doesnt have stuff, serializers do
+        mshr.entries[mshr_entry_to_send].valid=FALSE;
+        for(int i =0;i<mshr_size;i++){
+            mshr.entries[i].old_bits--;
+        }
+        mshr.occupancy--;
+    }
+    //keep in mind that both the serializer and mshr can send stuff in the same cycle
 
-    //case 3: MSHR doesn't have stuff, serializers dont
+    //account for serializer subsequent bursts 
+    if(metadata_bus.is_serializer_sending_data==TRUE){
+        metadata_bus.burst_counter++;
 
-    //case 4: MSHR has stuff, serializers have stuff
+        data_bus.byte_wires[metadata_bus.burst_counter*4+0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
+        data_bus.byte_wires[metadata_bus.burst_counter*4+1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
+        data_bus.byte_wires[metadata_bus.burst_counter*4+2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
+        data_bus.byte_wires[metadata_bus.burst_counter*4+3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
 
-    //ACTIVE MEMORY CASES
+        serializer.entries[serializer_entry_to_send].valid=0;
+        for(int i =0;i<num_serializer_entries;i++){
+            serializer.entries[i].old_bits--;
+        }
+        serializer.occupancy--;
+    }
 }
+
+//architectural register for the memory controller to keep whats happening happening
+int addresses_to_banks[banks_in_DRAM];
 
 void memory_controller(){
+    //will need to probe the metadatabus to see the current state to see what itll need to do this cycle
+
+    //if serializer is sending data, call the deserializer inserter
+    if(metadata_bus.is_serializer_sending_data){
+        deserializer_inserter();
+    }
+
+    //needs to update the bank status and destinations
+}
+
+//needs to be called every cycle
+//track occupancy and tell caches if theyre allowed to evict or not by updating architectural register
+void serializer_handler(){
 
 }
-<<<<<<< HEAD
 
+//called upon eviction from cache/tlb
+void serializer_inserter(){
+
+}
+
+//called when the serializer is sending data
+void deserializer_inserter(){
+    if(metadata_bus.burst_counter==0){
+
+    }
+}
+
+//needs to be called every cycle, will set availability of deserializer on metadata bus
 void deserializer_handler(){
-
+    //iterate through deserializers and find the first available one, use that as the target
 }
-=======
->>>>>>> 2ef23aa07e250d9420d151b285f53947786f80f3
