@@ -14,6 +14,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 #include <stdlib.h>
 #include <string.h>
 #include "BP.cpp"
+#include <cassert>
 
 void fetch_stage();
 void predecode_stage();
