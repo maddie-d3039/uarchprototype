@@ -14,7 +14,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 #include <stdlib.h>
 #include <string.h>
 #include "BP.cpp"
-
+#include "config.h"
 void fetch_stage();
 void predecode_stage();
 void decode_stage();
@@ -33,8 +33,6 @@ void deserializer_handler();
 void deserializer_inserter();
 
 #define control_store_rows 20 //arbitrary
-#define history_length 8;
-#define table_length 16;
 #define TRUE  1
 #define FALSE 0
 
@@ -63,10 +61,6 @@ int MEMORY[WORDS_IN_MEM][4];
 //address mapping
 // RRR RRRR CCBkBk CCBoBBoB
 //actual structures
-#define byes_per_column 4
-#define columns_per_row 16
-#define rows_per_bank 128
-#define banks_in_DRAM 4
 //a column has 4 bytes
 typedef struct Column_Struct{
     int bytes[byes_per_column];
@@ -177,18 +171,6 @@ int serializer_entry_to_send;
 
 //virtual memory specifications
 int SBR = 0x500;
-#define pte_size 4
-
-
-// Number of entries per pool
-#define REGISTER_ALIAS_POOL_ENTRIES 64
-#define FLAG_ALIAS_POOL_ENTRIES     64
-#define MEMORY_ALIAS_POOL_ENTRIES   64
-
-// Base offsets for each alias range
-#define REGISTER_ALIAS_BASE  0
-#define FLAG_ALIAS_BASE      (REGISTER_ALIAS_BASE + REGISTER_ALIAS_POOL_ENTRIES)  // 64
-#define MEMORY_ALIAS_BASE    (FLAG_ALIAS_BASE     + FLAG_ALIAS_POOL_ENTRIES)      // 128
 
 // --------------------------------------------------------------
 // Struct for Register Alias Pool (global IDs 0..63)
@@ -312,7 +294,6 @@ struct MemoryAliasPool {
 
 
 #define ibuffer_size 4
-#define cache_line_size 16
 int ibuffer[ibuffer_size][cache_line_size];
 int ibuffer_valid[ibuffer_size];
 
@@ -691,9 +672,6 @@ int main(int argc, char *argv[]) {
 
 //DCACHE
 //address mapping: TTT TTT TTI IBO OOO
-#define dcache_banks 2
-#define dcache_sets 4
-#define dcache_ways 4
 typedef struct D$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
@@ -716,9 +694,7 @@ D$ dcache;
 
 //ICACHE
 //address mapping: TTT TTT TII IBO OOO
-#define icache_banks 2
-#define icache_sets 8
-#define icache_ways 2
+
 typedef struct I$_TagStoreEntry_Struct{
     int valid_way0, tag_way0, dirty_way0,
         valid_way1, tag_way1, dirty_way1,
@@ -738,7 +714,6 @@ typedef struct I$_Struct{
 I$ icache;
 
 //tlb
-#define tlb_entries 8
 typedef struct TLBEntry_Struct{
     int valid, present, permissions, vpn, pfn;
 } TLBEntry;
@@ -765,7 +740,7 @@ typedef struct StoreQueue_Struct{
 
 //reservation_stations
 //note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
-#define num_entries_per_RS 8
+
 typedef struct ReservationStation_Entry_Struct{
     int store_tag, entry_valid;
     //operand 1
@@ -791,8 +766,7 @@ ReservationStation or_RS;
 //mshr
 //entries are the actual entries waiting for the data to come back or waiting to send their address to the memory controller
 //pre-entries are what just got inserted this cycle and need to be sorted
-#define mshr_size 16
-#define pre_mshr_size 8
+
 typedef struct MSHR_Entry_Struct{
     int valid, old_bits, origin, address;
 } MSHR_Entry;
@@ -806,7 +780,7 @@ MSHR mshr;
 //btb
 
 //Speculative Execution Tracker
-#define spec_exe_tracker_size 4
+
 typedef struct SpecExe_Entry_Struct{
     int valid, not_taken_target, taken_target, prediction, flag_alias;
 } SpecExe_Entry;
@@ -815,7 +789,6 @@ typedef struct SpecExeTracker_Struct{
 } SpecExeTracker;
 
 //Seralizers
-#define num_serializer_entries 8
 typedef struct Serializer_Entry_Struct{
     int valid, old_bits, sending_data;
     int data[cache_line_size], address;
@@ -829,7 +802,7 @@ typedef struct Serializer_Struct{
 Serializer serializer;
 
 //Deserializers
-#define num_deserializer_entries 8
+
 typedef struct Deserializer_Entry_Struct{
     int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
     int data[cache_line_size], address;
@@ -843,7 +816,7 @@ typedef struct Deserializer_Struct{
 Deserializer deserializer;
 
 //ROB
-#define rob_size 16
+
 typedef struct ROB_Entry_Struct{
   int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
 } ROB_Entry;
