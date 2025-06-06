@@ -1,6 +1,5 @@
 
-#define history_length 8
-#define starting_val 2 //weakly taken, 10
+#include "config.h"
 class BP{
 int branchTable[1 << history_length]; //each history is 
 unsigned char BHR = 0;
