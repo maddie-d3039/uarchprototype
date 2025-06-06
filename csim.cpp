@@ -13,6 +13,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cassert>
 #include "BP.cpp"
 
 void fetch_stage();
@@ -112,14 +113,17 @@ Data_Bus data_bus;
 typedef struct Metadata_Bus_Struct{
     int mshr_address;
     int serializer_address;
+    int store_address;
     int is_mshr_sending_addr;
+    int request_ID;
     int is_serializer_sending_data;
     int burst_counter;
     int receive_enable;
     int origin;
     int destination;
     int deserializer_full;
-    int deserializer_target;
+    int deserializer_target;//oh this is for the deserializer that will be stored into next
+    int serializer_available;//equivalent to allow evictions
     int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 waiting to send loaded data
     int bank_destinations[banks_in_DRAM];
 }Metadata_Bus;
@@ -794,7 +798,7 @@ ReservationStation or_RS;
 #define mshr_size 16
 #define pre_mshr_size 8
 typedef struct MSHR_Entry_Struct{
-    int valid, old_bits, origin, address;
+    int valid, old_bits, origin, address, request_ID;
 } MSHR_Entry;
 typedef struct MSHR{
     MSHR_Entry entries[mshr_size];
@@ -855,7 +859,7 @@ ROB rob;
 
 //functionality
 
-void mshr_preinserter(int address, int origin){
+void mshr_preinserter(int address, int origin, int request_ID){
     //origin 0 is icache
     //origin 1 is dcache
     //origin 2 is tlb
@@ -866,6 +870,7 @@ void mshr_preinserter(int address, int origin){
             mshr.pre_occupancy++;
             mshr.pre_entries[i].origin=origin;
             mshr.pre_entries[i].address=address;
+            mshr.pre_entries[i].request_ID=request_ID;
             return;
         }
     }
@@ -1193,6 +1198,7 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
                     }
                 }
             }
@@ -1209,6 +1215,7 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
                     }
                 }
             }
@@ -1225,6 +1232,7 @@ void mshr_inserter(){
                         mshr.occupancy++;
                         mshr.entries[i].origin=mshr.pre_entries[j].origin;
                         mshr.entries[i].address=mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
                     }
                 }
             }
@@ -1237,6 +1245,12 @@ void bus_arbiter(){
     
     if(metadata_bus.burst_counter==3){
         metadata_bus.is_serializer_sending_data=FALSE;
+
+        serializer.entries[serializer_entry_to_send].valid=0;
+        for(int i =0;i<num_serializer_entries;i++){
+            serializer.entries[i].old_bits--;
+        }
+        serializer.occupancy--;
     }
 
     //search mshr for oldest entry
@@ -1305,27 +1319,56 @@ void bus_arbiter(){
         data_bus.byte_wires[metadata_bus.burst_counter*4+1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
         data_bus.byte_wires[metadata_bus.burst_counter*4+2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
         data_bus.byte_wires[metadata_bus.burst_counter*4+3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
-
-        serializer.entries[serializer_entry_to_send].valid=0;
-        for(int i =0;i<num_serializer_entries;i++){
-            serializer.entries[i].old_bits--;
-        }
-        serializer.occupancy--;
     }
 }
 
-//architectural register for the memory controller to keep whats happening happening
+//architectural registers for the memory controller to keep whats happening happening
 int addresses_to_banks[banks_in_DRAM];
+int addr_to_bank_cycle[banks_in_DRAM];
+
+#define cycles_to_access_bank 5
 
 void memory_controller(){
     //will need to probe the metadatabus to see the current state to see what itll need to do this cycle
 
     //if serializer is sending data, call the deserializer inserter
-    if(metadata_bus.is_serializer_sending_data){
+    if(metadata_bus.is_serializer_sending_data==TRUE){
         deserializer_inserter();
     }
 
-    //needs to update the bank status and destinations
+    //handle incoming read requests
+    if(metadata_bus.is_mshr_sending_addr==TRUE){
+        int bkbits = get_bank_bits(metadata_bus.mshr_address);
+        addresses_to_banks[bkbits] = metadata_bus.mshr_address;
+        addr_to_bank_cycle[bkbits] = 0;
+        metadata_bus.bank_status[bkbits] = 1;
+        metadata_bus.bank_destinations[bkbits]=metadata_bus.origin;
+    }
+
+    //iterate through the banks
+    for(int i =0;i<banks_in_DRAM;i++){
+        //handle in progress read requests
+        if(metadata_bus.bank_status[i]==1){
+            if(addr_to_bank_cycle[i]==cycles_to_access_bank){
+                //initiate load send to cpu
+                if((metadata_bus.is_serializer_sending_data==FALSE)&&(metadata_bus.serializer_available==TRUE)&&(metadata_bus.receive_enable==FALSE)){
+                    metadata_bus.receive_enable=TRUE;
+                    metadata_bus.burst_counter=0;
+                    metadata_bus.store_address=addresses_to_banks[i];
+                    metadata_bus.destination = metadata_bus.bank_destinations[i];
+                    
+                    addr_to_bank_cycle[i]++;
+                }else{
+                    continue;//wait until you can send stuff back
+                }
+            }//continue load send to cpu
+            else if(addr_to_bank_cycle[i]>cycles_to_access_bank){
+                
+            }else{
+                addr_to_bank_cycle[i]++;
+            }
+        }
+    }
 }
 
 //needs to be called every cycle
