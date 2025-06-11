@@ -26,12 +26,12 @@ void memory_stage();
 void writeback_stage();
 void memory_controller();
 void bus_arbiter();
-void mshr_preinserter(int, int);
+void mshr_preinserter(int, int, int);
 void mshr_inserter();
-void serializer_handler();
 void serializer_inserter();
 void deserializer_handler();
 void deserializer_inserter();
+void rescue_stager();
 
 #define control_store_rows 20 //arbitrary
 #define TRUE  1
@@ -109,16 +109,22 @@ typedef struct Metadata_Bus_Struct{
     int serializer_address;
     int store_address;
     int is_mshr_sending_addr;
-    int request_ID;
+    int to_mem_request_ID;
+    int to_cpu_request_ID;
     int is_serializer_sending_data;
     int burst_counter;
     int receive_enable;
+    int revival_in_progress;
+    int current_revival_entry;
     int origin;
     int destination;
     int deserializer_full;
+    int deserializer_can_store=1;
+    int deserializer_bank_targets[banks_in_DRAM];
     int deserializer_target;//oh this is for the deserializer that will be stored into next
-    int serializer_available;//equivalent to allow evictions
-    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 waiting to send loaded data
+    int deserializer_next_entry;
+    int serializer_available=1;//equivalent to allow evictions
+    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 attempting revival
     int bank_destinations[banks_in_DRAM];
 }Metadata_Bus;
 
@@ -337,7 +343,6 @@ void cycle(){
     memory_controller();
     bus_arbiter();
     mshr_inserter();
-    serializer_handler();
     deserializer_handler();
     pipeline=new_pipeline;
     cycle_count++;
@@ -692,6 +697,7 @@ typedef struct D$_DataStore_Struct{
 typedef struct D$_Struct{
     D$_DataStore data;
     D$_TagStore tag;
+    int bank_status[icache_banks];//0 means that its available, 1 means its being written tos
 } D$;
 
 D$ dcache;
@@ -713,6 +719,7 @@ typedef struct I$_DataStore_Struct{
 typedef struct I$_Struct{
     I$_DataStore data;
     I$_TagStore tag;
+    int bank_status[icache_banks];//0 means that its available, 1 means its being written to
 } I$;
 
 I$ icache;
@@ -793,9 +800,11 @@ typedef struct SpecExeTracker_Struct{
 } SpecExeTracker;
 
 //Seralizers
+#define max_serializer_occupancy 8
 typedef struct Serializer_Entry_Struct{
     int valid, old_bits, sending_data;
     int data[cache_line_size], address;
+    int rescue_lock, rescue_destination;
 } Serializer_Entry;
 
 typedef struct Serializer_Struct{
@@ -806,10 +815,11 @@ typedef struct Serializer_Struct{
 Serializer serializer;
 
 //Deserializers
-
+#define max_deserializer_occupancy 8
 typedef struct Deserializer_Entry_Struct{
     int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
     int data[cache_line_size], address;
+    int revival_lock, revival_destination, revival_reqID;
 } Deserializer_Entry;
 
 typedef struct Deserializer_Struct{
@@ -895,7 +905,21 @@ void tlb_write(){
     
 }
 
+void icache_write(){
 
+}
+
+void icache_paste(int address, int data[cache_line_size]){
+
+}
+
+void dcache_write(){
+
+}
+
+void dcache_paste(int address, int data[cache_line_size]){
+
+}
 
 //stages
 
@@ -1160,6 +1184,18 @@ void fetch_stage(){
 }
 
 void mshr_inserter(){
+    //treat serializer as victim cache first for i/dcache
+    for(int i =0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid && (mshr.pre_entries[i].origin ==0 || mshr.pre_entries[i].origin ==1)){
+            //iterate through serializer
+            for(int j =0;j<num_serializer_entries;j++){
+                if(serializer.entries[j].valid && (serializer.entries[j].address==mshr.pre_entries[i].address)){
+                    serializer.entries[j].rescue_lock=1;
+                    serializer.entries[j].rescue_destination=mshr.pre_entries[i].origin;
+                }
+            }
+        }
+    }
     //insert icache requests
     for(int i = 0;i<pre_mshr_size;i++){
         if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==0){
@@ -1218,8 +1254,9 @@ void mshr_inserter(){
 void bus_arbiter(){
     //approach: probe metadata bus and do casework
     
-    if(metadata_bus.burst_counter==3){
+    if(metadata_bus.burst_counter==3 && metadata_bus.is_serializer_sending_data==TRUE){
         metadata_bus.is_serializer_sending_data=FALSE;
+        metadata_bus.burst_counter=0;
 
         serializer.entries[serializer_entry_to_send].valid=0;
         for(int i =0;i<num_serializer_entries;i++){
@@ -1277,6 +1314,7 @@ void bus_arbiter(){
         metadata_bus.is_mshr_sending_addr=TRUE;
         //destination stuff
         metadata_bus.origin = mshr.entries[mshr_entry_to_send].origin;
+        metadata_bus.to_mem_request_ID = mshr.entries[mshr_entry_to_send].request_ID;
 
         mshr.entries[mshr_entry_to_send].valid=FALSE;
         for(int i =0;i<mshr_size;i++){
@@ -1290,16 +1328,18 @@ void bus_arbiter(){
     if(metadata_bus.is_serializer_sending_data==TRUE){
         metadata_bus.burst_counter++;
 
-        data_bus.byte_wires[metadata_bus.burst_counter*4+0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
+        data_bus.byte_wires[0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
+        data_bus.byte_wires[1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
+        data_bus.byte_wires[2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
+        data_bus.byte_wires[3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
     }
 }
 
 //architectural registers for the memory controller to keep whats happening happening
 int addresses_to_banks[banks_in_DRAM];
+int reqID_to_bank[banks_in_DRAM];
 int addr_to_bank_cycle[banks_in_DRAM];
+int entry_to_bank[banks_in_DRAM];
 
 #define cycles_to_access_bank 5
 
@@ -1312,12 +1352,26 @@ void memory_controller(){
     }
 
     //handle incoming read requests
+    //ALERT : need to change this to insert into the revival queue
     if(metadata_bus.is_mshr_sending_addr==TRUE){
         int bkbits = get_bank_bits(metadata_bus.mshr_address);
         addresses_to_banks[bkbits] = metadata_bus.mshr_address;
         addr_to_bank_cycle[bkbits] = 0;
-        metadata_bus.bank_status[bkbits] = 1;
+        reqID_to_bank[bkbits] = metadata_bus.to_mem_request_ID;
+        metadata_bus.bank_status[bkbits] = 3;
         metadata_bus.bank_destinations[bkbits]=metadata_bus.origin;
+    }
+
+    //check deserializer to start any stores if possible
+    if(metadata_bus.deserializer_can_store==TRUE &&
+       deserializer.entries[metadata_bus.deserializer_next_entry].receiving_data_from_data_bus==FALSE && 
+       deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM==FALSE){
+        int bkbits = get_bank_bits(deserializer.entries[metadata_bus.deserializer_next_entry].address);
+        deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM=TRUE;
+        metadata_bus.bank_status[bkbits]=2;
+        addr_to_bank_cycle[bkbits] = 0;
+        entry_to_bank[bkbits]=metadata_bus.deserializer_next_entry;
+        deserializer.entries[metadata_bus.deserializer_next_entry].old_bits=-1; // this causes a new next entry to be selected so a not busy bank can be stored into if need be
     }
 
     //iterate through the banks
@@ -1330,41 +1384,222 @@ void memory_controller(){
                     metadata_bus.receive_enable=TRUE;
                     metadata_bus.burst_counter=0;
                     metadata_bus.store_address=addresses_to_banks[i];
+                    metadata_bus.to_cpu_request_ID=reqID_to_bank[i];
                     metadata_bus.destination = metadata_bus.bank_destinations[i];
-                    
+
+                    data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[0];
+                    data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[1];
+                    data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[2];
+                    data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[3];
+
                     addr_to_bank_cycle[i]++;
                 }else{
                     continue;//wait until you can send stuff back
                 }
             }//continue load send to cpu
             else if(addr_to_bank_cycle[i]>cycles_to_access_bank){
-                
+                if(metadata_bus.burst_counter==3){
+                    //end it
+                    metadata_bus.bank_status[i]=0;
+                    metadata_bus.burst_counter=0;
+                    metadata_bus.receive_enable=FALSE;
+                    continue;
+                }else{
+                    metadata_bus.burst_counter++;
+
+                    data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+0];
+                    data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+1];
+                    data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+2];
+                    data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+3];
+                }
             }else{
                 addr_to_bank_cycle[i]++;
             }
+        }else if(metadata_bus.bank_status[i]==2){//handle in progress store requests, assume it takes 5 cycles to open the row and then just paste the data in it
+            if(addr_to_bank_cycle[i]==cycles_to_access_bank){
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[0]=deserializer.entries[entry_to_bank[i]].data[0];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[1]=deserializer.entries[entry_to_bank[i]].data[1];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[2]=deserializer.entries[entry_to_bank[i]].data[2];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[3]=deserializer.entries[entry_to_bank[i]].data[3];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[0]=deserializer.entries[entry_to_bank[i]].data[4];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[1]=deserializer.entries[entry_to_bank[i]].data[5];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[2]=deserializer.entries[entry_to_bank[i]].data[6];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[3]=deserializer.entries[entry_to_bank[i]].data[7];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[0]=deserializer.entries[entry_to_bank[i]].data[8];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[1]=deserializer.entries[entry_to_bank[i]].data[9];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[2]=deserializer.entries[entry_to_bank[i]].data[10];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[3]=deserializer.entries[entry_to_bank[i]].data[11];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[0]=deserializer.entries[entry_to_bank[i]].data[12];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[1]=deserializer.entries[entry_to_bank[i]].data[13];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[2]=deserializer.entries[entry_to_bank[i]].data[14];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[3]=deserializer.entries[entry_to_bank[i]].data[15];
+
+                metadata_bus.bank_status[i]=0;
+                deserializer.entries[entry_to_bank[i]].valid=FALSE;
+            }else{
+                addr_to_bank_cycle[i]++;
+            }
+        }else if(metadata_bus.bank_status[i]==3){
+            //attempt revival by searching through deserializer for an address match
+            //if revival succeeds, modify deserializer entry such that it'll send the data through the data bus
+            //if revival fails, change status to 1
+            bool revival_success = false;
+            for(int j=0;j<num_deserializer_entries;j++){
+                if(deserializer.entries[j].valid ==TRUE && (deserializer.entries[j].address==addresses_to_banks[i])){
+                    deserializer.entries[j].revival_destination=metadata_bus.bank_destinations[i];
+                    deserializer.entries[j].revival_lock=1;
+                    deserializer.entries[j].revival_reqID=reqID_to_bank[i];
+                    metadata_bus.bank_status[i]=0;
+                    revival_success=true;
+                    break;
+                }
+            }
+            if(revival_success==false){
+                metadata_bus.bank_status[i]=1;
+            }
         }
     }
-}
 
-//needs to be called every cycle
-//track occupancy and tell caches if theyre allowed to evict or not by updating architectural register
-void serializer_handler(){
+    //stage revivals here, only one revival can be staged in a singular cycle and they take 4 cycles to burst
+    for(int i =0;i<num_deserializer_entries;i++){
+        if((metadata_bus.revival_in_progress==FALSE) && 
+           (deserializer.entries[i].revival_lock==TRUE) && 
+           (metadata_bus.is_serializer_sending_data==FALSE) && 
+           (metadata_bus.serializer_available==TRUE) && 
+           (metadata_bus.receive_enable==FALSE)){
+            metadata_bus.revival_in_progress=TRUE;
+            metadata_bus.receive_enable=TRUE;
+            metadata_bus.current_revival_entry=i;
+            metadata_bus.burst_counter=0;
+            metadata_bus.destination=deserializer.entries[metadata_bus.current_revival_entry].revival_destination;
+            metadata_bus.to_cpu_request_ID=deserializer.entries[metadata_bus.current_revival_entry].revival_reqID;
 
+            metadata_bus.store_address=deserializer.entries[metadata_bus.current_revival_entry].address;
+            data_bus.byte_wires[0]=deserializer.entries[metadata_bus.current_revival_entry].data[0];
+            data_bus.byte_wires[1]=deserializer.entries[metadata_bus.current_revival_entry].data[1];
+            data_bus.byte_wires[2]=deserializer.entries[metadata_bus.current_revival_entry].data[2];
+            data_bus.byte_wires[3]=deserializer.entries[metadata_bus.current_revival_entry].data[3];
+            
+            return;
+        }else if(metadata_bus.revival_in_progress==TRUE){
+            if(metadata_bus.burst_counter==3){
+                metadata_bus.burst_counter=0;
+                metadata_bus.receive_enable=FALSE;
+                metadata_bus.revival_in_progress=FALSE;
+                deserializer.entries[metadata_bus.current_revival_entry].revival_lock=0;
+                break;
+            }
+
+            metadata_bus.burst_counter++;
+
+            data_bus.byte_wires[0]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+0];
+            data_bus.byte_wires[1]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+1];
+            data_bus.byte_wires[2]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+2];
+            data_bus.byte_wires[3]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+3];
+
+        }
+    }
 }
 
 //called upon eviction from cache/tlb
 void serializer_inserter(){
 
+
+    serializer.occupancy++;
+
+    if(serializer.occupancy <max_serializer_occupancy){
+        metadata_bus.serializer_available=1;
+    }else{
+        metadata_bus.serializer_available=0;
+    }
 }
 
 //called when the serializer is sending data
 void deserializer_inserter(){
     if(metadata_bus.burst_counter==0){
-
+        deserializer.entries[metadata_bus.deserializer_target].address=metadata_bus.serializer_address;
+        deserializer.entries[metadata_bus.deserializer_target].receiving_data_from_data_bus=TRUE;
+    }
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+0]=data_bus.byte_wires[0];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+1]=data_bus.byte_wires[1];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+2]=data_bus.byte_wires[2];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+3]=data_bus.byte_wires[3];
+    if(metadata_bus.burst_counter==3){
+        deserializer.entries[metadata_bus.deserializer_target].old_bits=deserializer.occupancy;
+        deserializer.occupancy++;
+        deserializer.entries[metadata_bus.deserializer_target].valid=1;
+        deserializer.entries[metadata_bus.deserializer_target].receiving_data_from_data_bus=FALSE;
     }
 }
 
 //needs to be called every cycle, will set availability of deserializer on metadata bus
 void deserializer_handler(){
     //iterate through deserializers and find the first available one, use that as the target
+    //also indicate which banks the deserializer wants to store into
+    //also indicate which deserializer entry will store next
+    bool found_deserializer_target=false;
+    int temp_deserializer_bank_targets[banks_in_DRAM];
+    for(int i =0;i<banks_in_DRAM;i++){
+        temp_deserializer_bank_targets[i]=0;
+    }
+    for(int i =0;i<max_deserializer_occupancy;i++){
+        if(deserializer.entries[i].valid==FALSE && deserializer.entries[i].revival_lock==FALSE){
+            //target selection
+            metadata_bus.deserializer_target=i;
+            metadata_bus.deserializer_full=0;
+            found_deserializer_target=true;
+            //which banks are targetted for stores
+            temp_deserializer_bank_targets[get_bank_bits(deserializer.entries[i].address)]=1;
+        }
+    }
+    int search_age=0;
+    for(int i =0;i<max_deserializer_occupancy;i++){
+        if(deserializer.entries[i].valid==TRUE){
+            //next deserializer entry that gets to store
+            if(deserializer.entries[i].old_bits==search_age){
+                if(metadata_bus.bank_status[get_bank_bits(deserializer.entries[i].address)]==0){
+                    metadata_bus.deserializer_next_entry=i;
+                    metadata_bus.deserializer_can_store=1;
+                    break;
+                }else if(search_age==num_deserializer_entries){
+                    metadata_bus.deserializer_can_store=0;
+                    break;
+                }else{
+                    search_age++;
+                    i=-1;
+                }
+            }
+        }
+    }
+    for(int i =0;i<banks_in_DRAM;i++){
+        metadata_bus.deserializer_bank_targets[i]=temp_deserializer_bank_targets[i];
+    }
+    if(!found_deserializer_target){
+        metadata_bus.deserializer_full=1;
+    }
+}
+
+void rescue_stager(){
+    //if the destination is available for a write, stage the rescue
+    //for this, a burst isn't needed
+    //assume only one rescue allowed per cycle for now?
+    for(int i =0;i<num_serializer_entries;i++){
+        if(serializer.entries[i].rescue_lock==TRUE){
+            if(serializer.entries[i].rescue_destination==0){
+                if(icache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
+                    icache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
+                    icache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    serializer.entries[i].rescue_lock==FALSE;
+                    return;
+                }
+            }else if(serializer.entries[i].rescue_destination==1){
+                if(dcache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
+                    dcache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
+                    dcache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    serializer.entries[i].rescue_lock==FALSE;
+                    return;
+                }
+            }
+        }
+    }
 }
