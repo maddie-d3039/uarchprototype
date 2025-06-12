@@ -3,7 +3,7 @@ enum origin{
     icache,
     dcache,
     TLB,
-}
+};
 class tlb{
     struct tlb_entry{
         int valid;

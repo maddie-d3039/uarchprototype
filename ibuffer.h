@@ -11,14 +11,14 @@ class ibuffer{
 
     ibuffer(){
     current_sector = 0;
-    bank_align_cur = false;
-    bank_align_other = false;
+    bank_align_odd = false;
+    bank_align_even = false;
     for(int i = 0; i < ibuffer_size; i++){
         ibuffer_valid[i] = 0;
         }
     }
-    void ibuffer_operate(int EIP, cpu::PipeState_Entry& new_pipeline);
-
+    void operate(int EIP, cpu::PipeState_Entry& new_pipeline);
+    void invalidate(int length, int EIP);
     
 
 };
