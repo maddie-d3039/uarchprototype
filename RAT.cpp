@@ -69,12 +69,26 @@ class RAT
 
     int RegisterFile[GPR_Count];
 
-    void update(int tag, int value, enum Registers Reg)
+    void ROBupdate(int update_tag, int value, enum Registers Reg)
     {
-        if (tag < REGISTER_ALIAS_POOL_ENTRIES && tag > REGISTER_ALIAS_BASE)
+        if (update_tag < REGISTER_ALIAS_POOL_ENTRIES && update_tag > REGISTER_ALIAS_BASE)
         {
-            deallocateAlias(tag);
-            RegisterFile[Reg] = value;
+            for (int i = 0; i < GPR_Count; i++)
+            {
+                if (tag[i] == update_tag)
+                {
+                    deallocateAlias(update_tag);
+                    RegisterFile[Reg] = value;
+                    tag[Reg] = -1; // for debugging
+                    valid[Reg] = true;
+                }
+            }
         }
+    }
+
+    void setTableEntry(enum Registers Reg)
+    {
+        tag[Reg] = getAlias();
+        valid[Reg] = false;
     }
 };
