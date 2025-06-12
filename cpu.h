@@ -2,12 +2,14 @@
 #include "ibuffer.h"
 #include "icache.h"
 
-class cpu {
+class cpu
+{
 public:
     cpu() = default;
     void fetch_stage();
 
-    struct PipeState_Entry {
+    struct PipeState_Entry
+    {
         int predecode_valid;
         int predecode_ibuffer[ibuffer_size][cache_line_size];
         int predecode_EIP;
@@ -54,6 +56,6 @@ public:
     int EIP;
     PipeState_Entry pipeline;
     PipeState_Entry new_pipeline;
-    ibuffer the_ibuffer = new ibuffer();
-    icache the_icache = new icache();
+    ibuffer* the_ibuffer = new ibuffer();
+
 };
