@@ -113,6 +113,7 @@ typedef struct Metadata_Bus_Struct{
     int to_cpu_request_ID;
     int is_serializer_sending_data;
     int burst_counter;
+    int next_burst_counter;
     int receive_enable;
     int revival_in_progress;
     int current_revival_entry;
@@ -344,6 +345,15 @@ void cycle(){
     bus_arbiter();
     mshr_inserter();
     deserializer_handler();
+    if(metadata_bus.receive_enable && metadata_bus.destination==0){
+        icache_write_from_databus();
+    }
+    if(metadata_bus.receive_enable && metadata_bus.destination==1){
+        dcache_write_from_databus();
+    }
+    if(metadata_bus.receive_enable && metadata_bus.destination==2){
+        tlb_write();
+    }
     pipeline=new_pipeline;
     cycle_count++;
 }
@@ -682,11 +692,7 @@ int main(int argc, char *argv[]) {
 //DCACHE
 //address mapping: TTT TTT TTI IBO OOO
 typedef struct D$_TagStoreEntry_Struct{
-    int valid_way0, tag_way0, dirty_way0,
-        valid_way1, tag_way1, dirty_way1,
-        valid_way2, tag_way2, dirty_way2,
-        valid_way3, tag_way3, dirty_way3,
-        lru; 
+    int valid[dcache_ways], tag[dcache_ways], dirty[dcache_ways], lru;
 } D$_TagStoreEntry;
 typedef struct D$_TagStore_Struct{
     D$_TagStoreEntry dcache_tagstore[dcache_banks][dcache_sets];
@@ -700,15 +706,20 @@ typedef struct D$_Struct{
     int bank_status[icache_banks];//0 means that its available, 1 means its being written tos
 } D$;
 
+int get_dcache_bank_bits(int address){
+    return (address>>3)&0x1;
+}
+int get_dcache_idx_bits(int address){
+    return (address>>4)&0x3;
+}
+
 D$ dcache;
 
 //ICACHE
 //address mapping: TTT TTT TII IBO OOO
 
 typedef struct I$_TagStoreEntry_Struct{
-    int valid_way0, tag_way0, dirty_way0,
-        valid_way1, tag_way1, dirty_way1,
-        lru; 
+    int valid[icache_ways], tag[icache_ways], dirty[icache_ways], lru; 
 } I$_TagStoreEntry;
 typedef struct I$_TagStore_Struct{
     I$_TagStoreEntry icache_tagstore[icache_banks][icache_sets];
@@ -723,6 +734,13 @@ typedef struct I$_Struct{
 } I$;
 
 I$ icache;
+
+int get_icache_bank_bits(int address){
+    return (address>>4)&0x1;
+}
+int get_icache_idx_bits(int address){
+    return (address>>5)&0x7;
+}
 
 //tlb
 typedef struct TLBEntry_Struct{
@@ -905,20 +923,84 @@ void tlb_write(){
     
 }
 
-void icache_write(){
+void icache_write_from_databus(){
+    int bkbits = get_icache_bank_bits(metadata_bus.store_address);
+    int idxbits = get_icache_idx_bits(metadata_bus.store_address);
+    //evict if needed, if not can do the write
+    if(icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (icache.tag.icache_tagstore[bkbits][idxbits].tag[icache.tag.icache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru]);
+        icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru=FALSE];
+    }else{
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+0]=data_bus.byte_wires[metadata_bus.burst_counter*4+0];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+1]=data_bus.byte_wires[metadata_bus.burst_counter*4+1];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+2]=data_bus.byte_wires[metadata_bus.burst_counter*4+2];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+3]=data_bus.byte_wires[metadata_bus.burst_counter*4+3];
 
+        metadata_bus.next_burst_counter++;
+    }
 }
 
-void icache_paste(int address, int data[cache_line_size]){
-
+//from rescue
+bool icache_paste(int address, int data[cache_line_size]){
+    int bkbits = get_icache_bank_bits(address);
+    int idxbits = get_icache_idx_bits(address);
+    //evict if needed, if not can do the write
+    if(icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (icache.tag.icache_tagstore[bkbits][idxbits].tag[icache.tag.icache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru]);
+        icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru=FALSE];
+        return false;
+    }else{
+        for(int i =0;i<cache_line_size;i++){
+            icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][0]=data[0];
+        }
+        return true;
+    }
 }
 
-void dcache_write(){
+void dcache_write_from_databus(){
+    int bkbits = get_dcache_bank_bits(metadata_bus.store_address);
+    int idxbits = get_dcache_idx_bits(metadata_bus.store_address);
+    //evict if needed, if not can do the write
+    if(dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (dcache.tag.dcache_tagstore[bkbits][idxbits].tag[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru]);
+        dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]=FALSE;
+    }else{
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+0]=data_bus.byte_wires[metadata_bus.burst_counter*4+0];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+1]=data_bus.byte_wires[metadata_bus.burst_counter*4+1];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+2]=data_bus.byte_wires[metadata_bus.burst_counter*4+2];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+3]=data_bus.byte_wires[metadata_bus.burst_counter*4+3];
 
+        metadata_bus.next_burst_counter++;
+    }
 }
 
-void dcache_paste(int address, int data[cache_line_size]){
-
+//from rescue
+bool dcache_paste(int address, int data[cache_line_size]){
+    int bkbits = get_dcache_bank_bits(address);
+    int idxbits = get_dcache_idx_bits(address);
+    //evict if needed, if not can do the write
+    if(dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (dcache.tag.dcache_tagstore[bkbits][idxbits].tag[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru]);
+        dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru=FALSE];
+        return false;
+    }else{
+        for(int i =0;i<cache_line_size;i++){
+            dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][0]=data[0];
+        }
+        return true;
+    }
 }
 
 //stages
@@ -1100,77 +1182,77 @@ void fetch_stage(){
 
     int bank_aligned=FALSE;
     int bank_offset=FALSE;
-    int* dataBits0[cache_line_size],dataBits1[cache_line_size], *tlb_hit, *tlb_physical_tag;
+    int* dataBits0[cache_line_size],*dataBits1[cache_line_size], *tlb_hit, *tlb_physical_tag;
     I$_TagStoreEntry* icache_tag_metadata;
     if(ibuffer_valid[(current_sector)]==FALSE){
-        icache_access(EIP,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0== *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0]== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[current_sector][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1== *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0]== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits1[i];
+                ibuffer[current_sector][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-        icache_access(EIP+16,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+16,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+1)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+1)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+16, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+16, 0, 0);
         }
         bank_offset=TRUE;
     }
     if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE && bank_aligned==FALSE){
-        icache_access(EIP+32,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+32,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+2)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+2)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+32, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+32, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE && bank_offset==FALSE){
-        icache_access(EIP+48,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+48,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+3)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+3)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+48, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+48, 0, 0);
         }
         bank_offset=TRUE;
     }
@@ -1179,7 +1261,7 @@ void fetch_stage(){
     oldEIP = EIP;
     EIP +=length;
     if(length>=(16-line_offset)){
-        ibuffer_valid[current_sector]=TRUE;
+        ibuffer_valid[current_sector]=FALSE;
     }
 }
 
@@ -1326,7 +1408,7 @@ void bus_arbiter(){
 
     //account for serializer subsequent bursts 
     if(metadata_bus.is_serializer_sending_data==TRUE){
-        metadata_bus.burst_counter++;
+        metadata_bus.burst_counter=metadata_bus.next_burst_counter;
 
         data_bus.byte_wires[0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
         data_bus.byte_wires[1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
@@ -1352,7 +1434,6 @@ void memory_controller(){
     }
 
     //handle incoming read requests
-    //ALERT : need to change this to insert into the revival queue
     if(metadata_bus.is_mshr_sending_addr==TRUE){
         int bkbits = get_bank_bits(metadata_bus.mshr_address);
         addresses_to_banks[bkbits] = metadata_bus.mshr_address;
@@ -1383,6 +1464,7 @@ void memory_controller(){
                 if((metadata_bus.is_serializer_sending_data==FALSE)&&(metadata_bus.serializer_available==TRUE)&&(metadata_bus.receive_enable==FALSE)){
                     metadata_bus.receive_enable=TRUE;
                     metadata_bus.burst_counter=0;
+                    metadata_bus.next_burst_counter=0;
                     metadata_bus.store_address=addresses_to_banks[i];
                     metadata_bus.to_cpu_request_ID=reqID_to_bank[i];
                     metadata_bus.destination = metadata_bus.bank_destinations[i];
@@ -1398,19 +1480,18 @@ void memory_controller(){
                 }
             }//continue load send to cpu
             else if(addr_to_bank_cycle[i]>cycles_to_access_bank){
+                metadata_bus.burst_counter=metadata_bus.next_burst_counter;
+
+                data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+0];
+                data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+1];
+                data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+2];
+                data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+3];
                 if(metadata_bus.burst_counter==3){
                     //end it
                     metadata_bus.bank_status[i]=0;
                     metadata_bus.burst_counter=0;
                     metadata_bus.receive_enable=FALSE;
                     continue;
-                }else{
-                    metadata_bus.burst_counter++;
-
-                    data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+0];
-                    data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+1];
-                    data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+2];
-                    data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+3];
                 }
             }else{
                 addr_to_bank_cycle[i]++;
@@ -1482,28 +1563,42 @@ void memory_controller(){
             
             return;
         }else if(metadata_bus.revival_in_progress==TRUE){
-            if(metadata_bus.burst_counter==3){
-                metadata_bus.burst_counter=0;
-                metadata_bus.receive_enable=FALSE;
-                metadata_bus.revival_in_progress=FALSE;
-                deserializer.entries[metadata_bus.current_revival_entry].revival_lock=0;
-                break;
-            }
+            
 
-            metadata_bus.burst_counter++;
+            metadata_bus.burst_counter=metadata_bus.next_burst_counter;
 
             data_bus.byte_wires[0]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+0];
             data_bus.byte_wires[1]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+1];
             data_bus.byte_wires[2]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+2];
             data_bus.byte_wires[3]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+3];
 
+            if(metadata_bus.burst_counter==3){
+                metadata_bus.burst_counter=0;
+                metadata_bus.receive_enable=FALSE;
+                metadata_bus.revival_in_progress=FALSE;
+                deserializer.entries[metadata_bus.current_revival_entry].revival_lock=0;
+                continue;
+            }
+
         }
     }
 }
 
 //called upon eviction from cache/tlb
-void serializer_inserter(){
-
+void serializer_inserter(int address, int data[cache_line_size]){
+    for(int i =0;i<num_serializer_entries;i++){
+        if(serializer.entries[i].valid==FALSE){
+            serializer.entries[i].valid=TRUE;
+            serializer.entries[i].address=address;
+            for(int j =0;j<cache_line_size;j++){
+                serializer.entries[i].data[j]=data[j];
+            }
+            serializer.entries[i].old_bits=serializer.occupancy;
+            break;
+        }else{
+            continue;
+        }
+    }
 
     serializer.occupancy++;
 
@@ -1524,6 +1619,7 @@ void deserializer_inserter(){
     deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+1]=data_bus.byte_wires[1];
     deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+2]=data_bus.byte_wires[2];
     deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+3]=data_bus.byte_wires[3];
+    metadata_bus.next_burst_counter=metadata_bus.burst_counter++;
     if(metadata_bus.burst_counter==3){
         deserializer.entries[metadata_bus.deserializer_target].old_bits=deserializer.occupancy;
         deserializer.occupancy++;
@@ -1583,20 +1679,23 @@ void rescue_stager(){
     //if the destination is available for a write, stage the rescue
     //for this, a burst isn't needed
     //assume only one rescue allowed per cycle for now?
+    bool success= false;
     for(int i =0;i<num_serializer_entries;i++){
         if(serializer.entries[i].rescue_lock==TRUE){
             if(serializer.entries[i].rescue_destination==0){
                 if(icache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
                     icache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
-                    icache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
-                    serializer.entries[i].rescue_lock==FALSE;
+                    success = icache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    if(success)
+                        serializer.entries[i].rescue_lock==FALSE;
                     return;
                 }
             }else if(serializer.entries[i].rescue_destination==1){
                 if(dcache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
                     dcache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
-                    dcache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
-                    serializer.entries[i].rescue_lock==FALSE;
+                    success = dcache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    if(success)
+                        serializer.entries[i].rescue_lock==FALSE;
                     return;
                 }
             }
