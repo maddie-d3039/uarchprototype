@@ -1,7 +1,6 @@
-#ifndef CPU_H
-#define CPU_H
-
 #include "config.h"
+#include "ibuffer.h"
+#include "icache.h"
 
 class cpu {
 public:
@@ -56,6 +55,5 @@ public:
     PipeState_Entry pipeline;
     PipeState_Entry new_pipeline;
     ibuffer the_ibuffer = new ibuffer();
+    icache the_icache = new icache();
 };
-
-#endif // CPU_H

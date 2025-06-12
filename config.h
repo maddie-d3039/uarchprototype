@@ -1,4 +1,4 @@
-
+#define num_control_store_bits
 //icache
 #define icache_banks 2
 #define icache_sets 8
