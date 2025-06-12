@@ -57,7 +57,7 @@ public:
     int EIP;
     PipeState_Entry pipeline;
     PipeState_Entry new_pipeline;
-    ibuffer the_ibuffer = new ibuffer();
+    ibuffer *the_ibuffer = new ibuffer();
 };
 
 #endif // CPU_H
