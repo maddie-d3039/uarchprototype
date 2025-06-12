@@ -2,7 +2,7 @@
 #include "cpu.h"
 #include "ibuffer.h"
 
-void ibuffer_operate(int EIP, cpu::PipeState_Entry& new_pipeline){
+void ibuffer::ibuffer_operate(int EIP, cpu::PipeState_Entry& new_pipeline){
     int offset = EIP & 0x3F;
     int current_sector = offset/ibuffer_size;
     int line_offset = offset%cache_line_size;

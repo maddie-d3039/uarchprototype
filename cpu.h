@@ -3,12 +3,14 @@
 
 #include "config.h"
 
-class cpu {
+class cpu
+{
 public:
     cpu() = default;
     void fetch_stage();
 
-    struct PipeState_Entry {
+    struct PipeState_Entry
+    {
         int predecode_valid;
         int predecode_ibuffer[ibuffer_size][cache_line_size];
         int predecode_EIP;
