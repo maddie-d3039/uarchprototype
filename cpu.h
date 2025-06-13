@@ -54,8 +54,12 @@ public:
     };
 
     int EIP;
+    int length;
+    int data_bus;
+    int metadata_bus;
+    
     PipeState_Entry pipeline;
     PipeState_Entry new_pipeline;
     ibuffer* the_ibuffer = new ibuffer();
-
+    icache* the_icache = new icache();
 };
