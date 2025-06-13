@@ -1,4 +1,5 @@
-#define num_control_store_bits#include "cassert"
+#define num_control_store_bits
+#include "cassert"
 
 // icache
 #define icache_banks 2
