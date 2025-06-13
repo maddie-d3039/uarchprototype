@@ -50,5 +50,5 @@ class icache
     }
 
     cacheline *icache_access(int addr);
-    cache_lookup_result try_hit(int addr);
+    cache_lookup_result icache_try_hit(int addr);
 };

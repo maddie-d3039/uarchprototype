@@ -18,4 +18,7 @@ class dcache
             }
         }
     }
+
+    cacheline *dcache_access(int addr);
+    cache_lookup_result dcache_try_hit(int addr);
 };
