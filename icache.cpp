@@ -14,7 +14,7 @@ cacheline *icache::icache_access(int addr)
     return cache[bank][set];        // returns the ways you need to search
 }
 
-cache_lookup_result icache::try_hit(int addr)
+cache_lookup_result icache::icache_try_hit(int addr)
 {
     cacheline *set = icache_access(addr);
     int tag = tlb_access(addr);
