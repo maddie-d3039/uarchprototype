@@ -56,8 +56,8 @@ public:
     int EIP;
     int length;
     int data_bus;
-    int metadata_bus;
-    
+    int metadata_bus[2]; //make it longer as we need it
+
     PipeState_Entry pipeline;
     PipeState_Entry new_pipeline;
     ibuffer* the_ibuffer = new ibuffer();

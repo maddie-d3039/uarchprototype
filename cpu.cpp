@@ -9,7 +9,7 @@ void cpu::fetch_stage(){
     the_ibuffer->invalidate();
 }
 
-void cpu::predecode_stage(){
+void cpu::predecode_stage(){ //add enums to this
    
     if (new_pipeline.predecode_valid)
     {
