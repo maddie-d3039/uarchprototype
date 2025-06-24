@@ -315,7 +315,7 @@ int ibuffer_valid[ibuffer_size];
 typedef struct PipeState_Entry_Struct{
   int predecode_valid,predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
       predecode_offset, predecode_current_sector, predecode_line_offset,
-      decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
+      decode_valid, decode_instruction_length, decode_prefix, decode_opcode, decode_EIP, decode_immSize, decode_needSIB,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
       agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset,
@@ -1620,6 +1620,7 @@ void predecode_stage(){
             instIndex++;
             unsigned char mod_rm = instruction[instIndex];
             if((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0){ //uses SIB byte
+                new_pipeline.decode_needSIB = true;
                 len++;
             }
             int displacement = mod_rm & 0b11000000;
@@ -1639,6 +1640,7 @@ void predecode_stage(){
         }
         else if(opcode == 0x81 || opcode == 0x05){
             len+=4;
+            new_pipeline.decode_immSize = 0;
         }
         else if((opcode == 04) || (opcode == 80) || (opcode == 83)){ // all instructions with 1 byte immediate
             len++;
@@ -1649,6 +1651,8 @@ void predecode_stage(){
             new_pipeline.decode_instruction_register[i] = instruction[i];
         }
         new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
+        new_pipeline.decode_opcode = opcode;
+        new_pipeline.decode_prefix = prefix;
         length = len;
     }
 }
