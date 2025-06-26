@@ -1,4 +1,4 @@
-// todo: 
+// todo:
 /*
 RAT - done (sahil)
 FAT - done (sahil)
@@ -27,14 +27,17 @@ void writeback_stage();
 void memory_controller();
 void bus_arbiter();
 void mshr_preinserter(int, int, int);
+void mshr_preinserter(int, int, int);
 void mshr_inserter();
+void serializer_inserter(int, int data[cache_line_size]);
 void serializer_inserter();
 void deserializer_handler();
 void deserializer_inserter();
 void rescue_stager();
+void rescue_stager();
 
-#define control_store_rows 20 //arbitrary
-#define TRUE  1
+#define control_store_rows 20 // arbitrary
+#define TRUE 1
 #define FALSE 0
 
 enum CS_BITS {
@@ -55,66 +58,79 @@ int CONTROL_STORE[control_store_rows][num_control_store_bits];
 /* Main memory.                                                */
 /***************************************************************/
 
-#define WORDS_IN_MEM    0x01000
-//simple memory array but its obsolete, use the dram struct
+#define WORDS_IN_MEM 0x01000
+// simple memory array but its obsolete, use the dram struct
 int MEMORY[WORDS_IN_MEM][4];
 
-//address mapping
-// RRR RRRR CCBkBk CCBoBBoB
-//actual structures
-//a column has 4 bytes
-typedef struct Column_Struct{
-    int bytes[byes_per_column];
+// address mapping
+//  RRR RRRR CCBkBk CCBoBBoB
+// actual structures
+// a column has 4 bytes
+typedef struct Column_Struct
+{
+    int bytes[bytes_per_column];
 } Column;
-typedef struct Row_Struct{
+typedef struct Row_Struct
+{
     Column columns[columns_per_row];
 } Row;
-typedef struct Bank_Struct{
+typedef struct Bank_Struct
+{
     Row rows[rows_per_bank];
 } Bank;
-typedef struct DRAM_Struct{
+typedef struct DRAM_Struct
+{
     Bank banks[banks_in_DRAM];
 } DRAM;
 DRAM dram;
 
-//mask helper functions
+// mask helper functions
 
-int get_row_bits(int addr){
-    return (addr>>8)&0x7F;
+int get_row_bits(int addr)
+{
+    return (addr >> 8) & 0x7F;
 }
 
-int get_bank_bits(int addr){
-    return (addr>>4)&0x3;
+int get_bank_bits(int addr)
+{
+    return (addr >> 4) & 0x3;
 }
 
-int get_column_bits(int addr){
-    return ((addr>>6)&(0x3)<<2) + (addr>>2)&(0x3);
+int get_column_bits(int addr)
+{
+    return ((addr >> 6) & (0x3) << 2) + (addr >> 2) & (0x3);
 }
 
+// BUS
 
-//BUS
-
-//make data bus of 32 bits
-//make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
+// make data bus of 32 bits
+// make metadata bus capable of holding handshake and activation signals, address, etc. Figure out all that needs to be in it
 
 #define bytes_on_data_bus 4
-typedef struct Data_Bus_Struct{
+typedef struct Data_Bus_Struct
+{
     int byte_wires[bytes_on_data_bus];
 } Data_Bus;
 
 Data_Bus data_bus;
 
-typedef struct Metadata_Bus_Struct{
+typedef struct Metadata_Bus_Struct
+{
     int mshr_address;
     int serializer_address;
     int store_address;
     int is_mshr_sending_addr;
     int to_mem_request_ID;
     int to_cpu_request_ID;
+    int to_mem_request_ID;
+    int to_cpu_request_ID;
     int is_serializer_sending_data;
     int burst_counter;
     int next_burst_counter;
+    int next_burst_counter;
     int receive_enable;
+    int revival_in_progress;
+    int current_revival_entry;
     int revival_in_progress;
     int current_revival_entry;
     int origin;
@@ -127,81 +143,112 @@ typedef struct Metadata_Bus_Struct{
     int serializer_available=1;//equivalent to allow evictions
     int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 attempting revival
     int bank_destinations[banks_in_DRAM];
-}Metadata_Bus;
+} Metadata_Bus;
 
 Metadata_Bus metadata_bus;
 
 #define bits_in_word 32
 
-//architectural registers
+// architectural registers
 
-//rat and reg file
-enum Registers{
-    EAX_idx, EBX_idx, ECX_idx, EDX_idx, ESI_idx, EDI_idx, EBP_idx, ESP_idx, GPR_Count
+// rat and reg file
+enum Registers
+{
+    EAX_idx,
+    EBX_idx,
+    ECX_idx,
+    EDX_idx,
+    ESI_idx,
+    EDI_idx,
+    EBP_idx,
+    ESP_idx,
+    GPR_Count
 } Registers;
-typedef struct Register_File_Struct{
+typedef struct Register_File_Struct
+{
     int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
 } Register_File;
 
-typedef struct RAT_MetadataEntry_Struct{
+typedef struct RAT_MetadataEntry_Struct
+{
     int valid, alias;
 } RAT_MetadataEntry;
-typedef struct RAT_Struct{
+typedef struct RAT_Struct
+{
     Register_File regfile;
     RAT_MetadataEntry metadata[GPR_Count];
 } RAT;
 
 RAT rat;
 
-//fat and flag file
-enum Flags{
-    Carry_idx, Parity_idx, Auxiliary_Carry_idx, Zero_idx, Sign_idx, Trap_idx, Interrupt_enable_idx, Direction_idx, 
-    Overflow_idx, IO_Privilege_level_idx, Nester_task_flag_idx, Mode_flag_idx, Resume_idx, Alignnment_check_idx, Flag_Count
-} Flags; //I didn't include some virtual process flags because I don't think we need them? Correct me if I'm wrong
-typedef struct Flag_File_Struct{
-    int Carry, Parity, Auxiliary_Carry, Zero, Sign, Trap, Interrupt_enable, Direction, 
-    Overflow, IO_Privilege_level, Nester_task_flag, Mode_flag, Resume, Alignnment_check, Flag_Count;
+// fat and flag file
+enum Flags
+{
+    Carry_idx,
+    Parity_idx,
+    Auxiliary_Carry_idx,
+    Zero_idx,
+    Sign_idx,
+    Trap_idx,
+    Interrupt_enable_idx,
+    Direction_idx,
+    Overflow_idx,
+    IO_Privilege_level_idx,
+    Nester_task_flag_idx,
+    Mode_flag_idx,
+    Resume_idx,
+    Alignnment_check_idx,
+    Flag_Count
+} Flags; // I didn't include some virtual process flags because I don't think we need them? Correct me if I'm wrong
+typedef struct Flag_File_Struct
+{
+    int Carry, Parity, Auxiliary_Carry, Zero, Sign, Trap, Interrupt_enable, Direction,
+        Overflow, IO_Privilege_level, Nester_task_flag, Mode_flag, Resume, Alignnment_check, Flag_Count;
 } Flag_File;
-typedef struct FAT_MetadataEntry_Struct{
+typedef struct FAT_MetadataEntry_Struct
+{
     int valid, alias;
 } FAT_MetadataEntry;
-typedef struct FAT_Struct{
+typedef struct FAT_Struct
+{
     Flag_File flagfile;
     FAT_MetadataEntry metadata[Flag_Count];
 } FAT;
 
 FAT fat;
 
-
 int EIP;
 int oldEIP;
-int tempEIP; //used for branch resteering
+int tempEIP; // used for branch resteering
 int tempOffset;
-//used for bus arbiter
+// used for bus arbiter
 int serializer_entry_to_send;
-
-//virtual memory specifications
-int SBR = 0x500;
 
 // --------------------------------------------------------------
 // Struct for Register Alias Pool (global IDs 0..63)
 // --------------------------------------------------------------
-struct RegisterAliasPool {
-    int  aliases[REGISTER_ALIAS_POOL_ENTRIES];
+struct RegisterAliasPool
+{
+    int aliases[REGISTER_ALIAS_POOL_ENTRIES];
     bool valid[REGISTER_ALIAS_POOL_ENTRIES];
 
-    RegisterAliasPool() {
+    RegisterAliasPool()
+    {
         // Initialize each slot so aliases[i] = (base + i), and mark all as unused
-        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
-            aliases[i] = REGISTER_ALIAS_BASE + i;  
-            valid[i]   = false;
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i)
+        {
+            aliases[i] = REGISTER_ALIAS_BASE + i;
+            valid[i] = false;
         }
     }
 
     // Returns one free alias in [0..63], or -1 if none left
-    int get() {
-        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i) {
-            if (!valid[i]) {
+    int get()
+    {
+        for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i)
+        {
+            if (!valid[i])
+            {
                 valid[i] = true;
                 return aliases[i];
             }
@@ -211,13 +258,13 @@ struct RegisterAliasPool {
 
     // Frees a previously allocated alias.
     // If `alias` is out of [0..63] or wasn't actually allocated, an assert fires.
-    void free(int alias) {
+    void free(int alias)
+    {
         // Compute local index
         int index = alias - REGISTER_ALIAS_BASE;
 
         // 1) Assert that alias is within this pool's global range
-        assert(index >= 0 && index < REGISTER_ALIAS_POOL_ENTRIES
-               && "RegisterAliasPool::free(): alias out of range!");
+        assert(index >= 0 && index < REGISTER_ALIAS_POOL_ENTRIES && "RegisterAliasPool::free(): alias out of range!");
 
         // 2) Assert that this slot was previously allocated (valid == true)
         assert(valid[index] && "RegisterAliasPool::free(): alias was not allocated!");
@@ -230,21 +277,27 @@ struct RegisterAliasPool {
 // --------------------------------------------------------------
 // Struct for Flag Alias Pool (global IDs 64..127)
 // --------------------------------------------------------------
-struct FlagAliasPool {
-    int  aliases[FLAG_ALIAS_POOL_ENTRIES];
+struct FlagAliasPool
+{
+    int aliases[FLAG_ALIAS_POOL_ENTRIES];
     bool valid[FLAG_ALIAS_POOL_ENTRIES];
 
-    FlagAliasPool() {
-        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
-            aliases[i] = FLAG_ALIAS_BASE + i;  // 64 + i
-            valid[i]   = false;
+    FlagAliasPool()
+    {
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i)
+        {
+            aliases[i] = FLAG_ALIAS_BASE + i; // 64 + i
+            valid[i] = false;
         }
     }
 
     // Returns one free alias in [64..127], or -1 if none left
-    int get() {
-        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i) {
-            if (!valid[i]) {
+    int get()
+    {
+        for (int i = 0; i < FLAG_ALIAS_POOL_ENTRIES; ++i)
+        {
+            if (!valid[i])
+            {
                 valid[i] = true;
                 return aliases[i];
             }
@@ -254,11 +307,11 @@ struct FlagAliasPool {
 
     // Frees a previously allocated alias.
     // If `alias` is out of [64..127] or wasn't allocated, an assert fires.
-    void free(int alias) {
+    void free(int alias)
+    {
         int index = alias - FLAG_ALIAS_BASE;
 
-        assert(index >= 0 && index < FLAG_ALIAS_POOL_ENTRIES
-               && "FlagAliasPool::free(): alias out of range!");
+        assert(index >= 0 && index < FLAG_ALIAS_POOL_ENTRIES && "FlagAliasPool::free(): alias out of range!");
         assert(valid[index] && "FlagAliasPool::free(): alias was not allocated!");
 
         valid[index] = false;
@@ -268,21 +321,27 @@ struct FlagAliasPool {
 // --------------------------------------------------------------
 // Struct for Memory Alias Pool (global IDs 128..191)
 // --------------------------------------------------------------
-struct MemoryAliasPool {
-    int  aliases[MEMORY_ALIAS_POOL_ENTRIES];
+struct MemoryAliasPool
+{
+    int aliases[MEMORY_ALIAS_POOL_ENTRIES];
     bool valid[MEMORY_ALIAS_POOL_ENTRIES];
 
-    MemoryAliasPool() {
-        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
-            aliases[i] = MEMORY_ALIAS_BASE + i;  // 128 + i
-            valid[i]   = false;
+    MemoryAliasPool()
+    {
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i)
+        {
+            aliases[i] = MEMORY_ALIAS_BASE + i; // 128 + i
+            valid[i] = false;
         }
     }
 
     // Returns one free alias in [128..191], or -1 if none left
-    int get() {
-        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i) {
-            if (!valid[i]) {
+    int get()
+    {
+        for (int i = 0; i < MEMORY_ALIAS_POOL_ENTRIES; ++i)
+        {
+            if (!valid[i])
+            {
                 valid[i] = true;
                 return aliases[i];
             }
@@ -292,11 +351,11 @@ struct MemoryAliasPool {
 
     // Frees a previously allocated alias.
     // If `alias` is out of [128..191] or wasn't allocated, an assert fires.
-    void free(int alias) {
+    void free(int alias)
+    {
         int index = alias - MEMORY_ALIAS_BASE;
 
-        assert(index >= 0 && index < MEMORY_ALIAS_POOL_ENTRIES
-               && "MemoryAliasPool::free(): alias out of range!");
+        assert(index >= 0 && index < MEMORY_ALIAS_POOL_ENTRIES && "MemoryAliasPool::free(): alias out of range!");
         assert(valid[index] && "MemoryAliasPool::free(): alias was not allocated!");
 
         valid[index] = false;
@@ -331,14 +390,15 @@ typedef struct PipeState_Entry_Struct{
 } PipeState_Entry;
 
 PipeState_Entry pipeline, new_pipeline;
-BP* branch_predictor = new BP();
+BP *branch_predictor = new BP();
 int cycle_count;
 
 int RUN_BIT;
 
-void cycle(){ 
+void cycle()
+{
     new_pipeline = pipeline;
-    //stages
+    // stages
     writeback_stage();
     memory_stage();
     execute_stage();
@@ -347,7 +407,7 @@ void cycle(){
     decode_stage();
     predecode_stage();
     fetch_stage();
-    //memory structures
+    // memory structures
     memory_controller();
     bus_arbiter();
     mshr_inserter();
@@ -365,68 +425,76 @@ void cycle(){
     cycle_count++;
 }
 
-void run(int num_cycles) {
+void run(int num_cycles)
+{
     int i;
-    
-    if (RUN_BIT == FALSE) {
-      printf("Can't simulate, Simulator is halted\n\n");
-	return;
+
+    if (RUN_BIT == FALSE)
+    {
+        printf("Can't simulate, Simulator is halted\n\n");
+        return;
     }
 
     printf("Simulating for %d cycles...\n\n", num_cycles);
-    for (i = 0; i < num_cycles; i++) {
-	if (EIP == 0x0000) {
-	    cycle();
-	    RUN_BIT = FALSE;
-	    printf("Simulator halted\n\n");
-	    break;
-	}
-	cycle();
+    for (i = 0; i < num_cycles; i++)
+    {
+        if (EIP == 0x0000)
+        {
+            cycle();
+            RUN_BIT = FALSE;
+            printf("Simulator halted\n\n");
+            break;
+        }
+        cycle();
     }
 }
 
-void go() {
-    if ((RUN_BIT == FALSE) || (EIP == 0x0000)) {
-	printf("Can't simulate, Simulator is halted\n\n");
-	return;
+void go()
+{
+    if ((RUN_BIT == FALSE) || (EIP == 0x0000))
+    {
+        printf("Can't simulate, Simulator is halted\n\n");
+        return;
     }
     printf("Simulating...\n\n");
     /* initialization */
     while (EIP != 0x0000)
-      cycle();
+        cycle();
     cycle();
-      RUN_BIT = FALSE;
+    RUN_BIT = FALSE;
     printf("Simulator halted\n\n");
 }
 
-void mdump(FILE * dumpsim_file, int start, int stop) {
+void mdump(FILE *dumpsim_file, int start, int stop)
+{
     int address; /* this is a byte address */
 
     printf("\nMemory content [0x%04x..0x%04x] :\n", start, stop);
     printf("-------------------------------------\n");
     for (address = (start >> 1); address <= (stop >> 1); address++)
-	printf("  0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+        printf("  0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
     printf("\n");
 
     /* dump the memory contents into the dumpsim file */
     fprintf(dumpsim_file, "\nMemory content [0x%04x..0x%04x] :\n", start, stop);
     fprintf(dumpsim_file, "-------------------------------------\n");
     for (address = (start >> 1); address <= (stop >> 1); address++)
-	fprintf(dumpsim_file, " 0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+        fprintf(dumpsim_file, " 0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
     fprintf(dumpsim_file, "\n");
     fflush(dumpsim_file);
 }
 
-void rdump(FILE * dumpsim_file) {
-    int k; 
+void rdump(FILE *dumpsim_file)
+{
+    int k;
 
     printf("\nCurrent architectural state :\n");
     printf("-------------------------------------\n");
     printf("Cycle Count : %d\n", cycle_count);
     printf("PC          : 0x%04x\n", EIP);
-    //printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
+    // printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     printf("Registers:\n");
-	//printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
+    // printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
     printf("\n");
 
     /* dump the state information into the dumpsim file */
@@ -434,76 +502,79 @@ void rdump(FILE * dumpsim_file) {
     fprintf(dumpsim_file, "-------------------------------------\n");
     fprintf(dumpsim_file, "Cycle Count : %d\n", cycle_count);
     fprintf(dumpsim_file, "PC          : 0x%04x\n", EIP);
-    //fprintf(dumpsim_file, "Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
+    // fprintf(dumpsim_file, "Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     fprintf(dumpsim_file, "Registers:\n");
-	//fprintf(dumpsim_file, "EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
+    // fprintf(dumpsim_file, "EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP);//Need to fix this, currently dont have registers printing
     fprintf(dumpsim_file, "\n");
     fflush(dumpsim_file);
 }
 
-void idump(FILE * dumpsim_file) {
-    int k; 
+void idump(FILE *dumpsim_file)
+{
+    int k;
 
     printf("\nCurrent architectural state :\n");
     printf("-------------------------------------\n");
     printf("Cycle Count     : %d\n", cycle_count);
     printf("PC              : 0x%04x\n", EIP);
-    //printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
+    // printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     printf("Registers:\n");
-	//printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP); //Need to fix this, currently dont have registers printing
+    // printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP); //Need to fix this, currently dont have registers printing
     printf("\n");
 
     printf("------------- PREDECODE   Latches --------------\n");
-    printf("PD V          :  0x%04x\n", pipeline.predecode_valid );
+    printf("PD V          :  0x%04x\n", pipeline.predecode_valid);
     printf("\n");
     printf("PD EIP        :  %d\n", pipeline.predecode_EIP);
     printf("\n");
-    
+
     printf("------------- DECODE Latches --------------\n");
-    printf("DC V        :  0x%04x\n", pipeline.decode_valid );
+    printf("DC V        :  0x%04x\n", pipeline.decode_valid);
     printf("\n");
     // printf("DC IR       :  0x%04x\n", pipeline.decode_instruction_register );
-    printf("DC IL       :  0x%04x\n", pipeline.decode_instruction_length );
+    printf("DC IL       :  0x%04x\n", pipeline.decode_instruction_length);
     printf("DC EIP      :  %d\n", pipeline.decode_EIP);
     printf("\n");
 
     printf("------------- AGEN_BR  Latches --------------\n");
-    printf("AGBR V         :  0x%04x\n", pipeline.agbr_valid );
+    printf("AGBR V         :  0x%04x\n", pipeline.agbr_valid);
     printf("\n");
-    printf("AGBR NEIP  :  0x%04x\n", pipeline.agbr_NEIP );
-    printf("AGBR OP1 B     :  0x%04x\n", pipeline.agbr_op1_base ); 
-    printf("AGBR OP1 I          :  %d\n", pipeline.agbr_op1_index );
-    printf("AGBR OP1 S          :  0x%04x\n", pipeline.agbr_op1_scale );
+    printf("AGBR NEIP  :  0x%04x\n", pipeline.agbr_NEIP);
+    printf("AGBR OP1 B     :  0x%04x\n", pipeline.agbr_op1_base);
+    printf("AGBR OP1 I          :  %d\n", pipeline.agbr_op1_index);
+    printf("AGBR OP1 S          :  0x%04x\n", pipeline.agbr_op1_scale);
     printf("AGBR OP1 D        :  %d\n", pipeline.agbr_op1_disp);
-    printf("AGBR OP2 B     :  0x%04x\n", pipeline.agbr_op2_base ); 
-    printf("AGBR OP2 I          :  %d\n", pipeline.agbr_op2_index );
-    printf("AGBR OP2 S          :  0x%04x\n", pipeline.agbr_op2_scale );
+    printf("AGBR OP2 B     :  0x%04x\n", pipeline.agbr_op2_base);
+    printf("AGBR OP2 I          :  %d\n", pipeline.agbr_op2_index);
+    printf("AGBR OP2 S          :  0x%04x\n", pipeline.agbr_op2_scale);
     printf("AGBR OP2 D        :  %d\n", pipeline.agbr_op2_disp);
     printf("AGBR_CS          :  ");
-    for ( k = 0 ; k < num_control_store_bits; k++) {
-      printf("%d",pipeline.agbr_cs[k]);
+    for (k = 0; k < num_control_store_bits; k++)
+    {
+        printf("%d", pipeline.agbr_cs[k]);
     }
 
     printf("------------- REG RENAME   Latches --------------\n");
-    printf("RR V          :  0x%04x\n", pipeline.rr_valid );
+    printf("RR V          :  0x%04x\n", pipeline.rr_valid);
     printf("\n");
-    printf("RR OP         :  0x%04x\n", pipeline.rr_operation );
-    printf("RR UF   :  0x%04x\n", pipeline.rr_updated_flags );
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_base );
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_index );
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_scale );
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_disp );
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_addr_mode );
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_base );
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_index );
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_scale );
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_disp );
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_addr_mode );
-    
+    printf("RR OP         :  0x%04x\n", pipeline.rr_operation);
+    printf("RR UF   :  0x%04x\n", pipeline.rr_updated_flags);
+    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_base);
+    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_index);
+    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_scale);
+    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_disp);
+    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_addr_mode);
+    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_base);
+    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_index);
+    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_scale);
+    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_disp);
+    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_addr_mode);
+
     printf("\n");
 }
 
-void init_control_store(char *ucode_filename) {
+void init_control_store(char *ucode_filename)
+{
     FILE *ucode;
     int i, j, index;
     char line[200];
@@ -511,62 +582,72 @@ void init_control_store(char *ucode_filename) {
     printf("Loading Control Store from file: %s\n", ucode_filename);
 
     /* Open the micro-code file. */
-    if ((ucode = fopen(ucode_filename, "r")) == NULL) {
-	printf("Error: Can't open micro-code file %s\n", ucode_filename);
-	exit(-1);
+    if ((ucode = fopen(ucode_filename, "r")) == NULL)
+    {
+        printf("Error: Can't open micro-code file %s\n", ucode_filename);
+        exit(-1);
     }
 
     /* Read a line for each row in the control store. */
-    for(i = 0; i < control_store_rows; i++) {
-	if (fscanf(ucode, "%[^\n]\n", line) == EOF) {
-	    printf("Error: Too few lines (%d) in micro-code file: %s\n",
-		   i, ucode_filename);
-	    exit(-1);
-	}
+    for (i = 0; i < control_store_rows; i++)
+    {
+        if (fscanf(ucode, "%[^\n]\n", line) == EOF)
+        {
+            printf("Error: Too few lines (%d) in micro-code file: %s\n",
+                   i, ucode_filename);
+            exit(-1);
+        }
 
-	/* Put in bits one at a time. */
-	index = 0;
+        /* Put in bits one at a time. */
+        index = 0;
 
-	for (j = 0; j < num_control_store_bits; j++) {
-	    /* Needs to find enough bits in line. */
-	    if (line[index] == '\0') {
-		printf("Error: Too few control bits in micro-code file: %s\nLine: %d\n",
-		       ucode_filename, i);
-		exit(-1);
-	    }
-	    if (line[index] != '0' && line[index] != '1') {
-		printf("Error: Unknown value in micro-code file: %s\nLine: %d, Bit: %d\n",
-		       ucode_filename, i, j);
-		exit(-1);
-	    }
+        for (j = 0; j < num_control_store_bits; j++)
+        {
+            /* Needs to find enough bits in line. */
+            if (line[index] == '\0')
+            {
+                printf("Error: Too few control bits in micro-code file: %s\nLine: %d\n",
+                       ucode_filename, i);
+                exit(-1);
+            }
+            if (line[index] != '0' && line[index] != '1')
+            {
+                printf("Error: Unknown value in micro-code file: %s\nLine: %d, Bit: %d\n",
+                       ucode_filename, i, j);
+                exit(-1);
+            }
 
-	    /* Set the bit in the Control Store. */
-	    CONTROL_STORE[i][j] = (line[index] == '0') ? 0:1;
-	    index++;
-	}
-	/* Warn about extra bits in line. */
-	if (line[index] != '\0')
-	    printf("Warning: Extra bit(s) in control store file %s. Line: %d\n",
-		   ucode_filename, i);
+            /* Set the bit in the Control Store. */
+            CONTROL_STORE[i][j] = (line[index] == '0') ? 0 : 1;
+            index++;
+        }
+        /* Warn about extra bits in line. */
+        if (line[index] != '\0')
+            printf("Warning: Extra bit(s) in control store file %s. Line: %d\n",
+                   ucode_filename, i);
     }
     printf("\n");
 }
 
-void init_memory() {
+void init_memory()
+{
     int i;
-    
-     for (i=0; i < WORDS_IN_MEM; i++) {
-	MEMORY[i][0] = 0;
-	MEMORY[i][1] = 0;
+
+    for (i = 0; i < WORDS_IN_MEM; i++)
+    {
+        MEMORY[i][0] = 0;
+        MEMORY[i][1] = 0;
     }
 }
 
-void init_state() {
-  memset(&pipeline, 0 ,sizeof(PipeState_Entry)); 
-  memset(&new_pipeline, 0 , sizeof(PipeState_Entry));
+void init_state()
+{
+    memset(&pipeline, 0, sizeof(PipeState_Entry));
+    memset(&new_pipeline, 0, sizeof(PipeState_Entry));
 }
 
-void get_command(FILE * dumpsim_file) {
+void get_command(FILE *dumpsim_file)
+{
     char buffer[20];
     int start, stop, cycles;
 
@@ -575,139 +656,156 @@ void get_command(FILE * dumpsim_file) {
     scanf("%s", buffer);
     printf("\n");
 
-    switch(buffer[0]) {
+    switch (buffer[0])
+    {
     case 'G':
     case 'g':
-	go();
-	break;
+        go();
+        break;
 
     case 'M':
     case 'm':
-	scanf("%i %i", &start, &stop);
-	mdump(dumpsim_file, start, stop);
-	break;
+        scanf("%i %i", &start, &stop);
+        mdump(dumpsim_file, start, stop);
+        break;
 
     case '?':
-	// help();
-	break;
+        // help();
+        break;
     case 'Q':
     case 'q':
-	printf("Bye.\n");
-	exit(0);
+        printf("Bye.\n");
+        exit(0);
 
     case 'R':
     case 'r':
-	if (buffer[1] == 'd' || buffer[1] == 'D')
-	    rdump(dumpsim_file);
-	else {
-	    scanf("%d", &cycles);
-	    run(cycles);
-	}
-	break;
+        if (buffer[1] == 'd' || buffer[1] == 'D')
+            rdump(dumpsim_file);
+        else
+        {
+            scanf("%d", &cycles);
+            run(cycles);
+        }
+        break;
 
     case 'I':
     case 'i':
         idump(dumpsim_file);
         break;
-	
+
     default:
-	printf("Invalid Command\n");
-	break;
+        printf("Invalid Command\n");
+        break;
     }
 }
 
-void load_program(char *program_filename) {
-    FILE * prog;
+void load_program(char *program_filename)
+{
+    FILE *prog;
     int ii, word, program_base;
 
     /* Open program file. */
     prog = fopen(program_filename, "r");
-    if (prog == NULL) {
-	printf("Error: Can't open program file %s\n", program_filename);
-	exit(-1);
+    if (prog == NULL)
+    {
+        printf("Error: Can't open program file %s\n", program_filename);
+        exit(-1);
     }
 
     /* Read in the program. */
     if (fscanf(prog, "%x\n", &word) != EOF)
-	program_base = word >> 1 ;
-    else {
-	printf("Error: Program file is empty\n");
-	exit(-1);
+        program_base = word >> 1;
+    else
+    {
+        printf("Error: Program file is empty\n");
+        exit(-1);
     }
 
     ii = 0;
-    while (fscanf(prog, "%x\n", &word) != EOF) {
-	/* Make sure it fits. */
-	if (program_base + ii >= WORDS_IN_MEM) {
-	    printf("Error: Program file %s is too long to fit in memory. %x\n",
-		   program_filename, ii);
-	    exit(-1);
-	}
-	
-	/* Write the word to memory array. */
-	MEMORY[program_base + ii][0] = word & 0x00FF;
-	MEMORY[program_base + ii][1] = (word >> 8) & 0x00FF;
-	ii++;
+    while (fscanf(prog, "%x\n", &word) != EOF)
+    {
+        /* Make sure it fits. */
+        if (program_base + ii >= WORDS_IN_MEM)
+        {
+            printf("Error: Program file %s is too long to fit in memory. %x\n",
+                   program_filename, ii);
+            exit(-1);
+        }
+
+        /* Write the word to memory array. */
+        MEMORY[program_base + ii][0] = word & 0x00FF;
+        MEMORY[program_base + ii][1] = (word >> 8) & 0x00FF;
+        ii++;
     }
 
-    if (EIP == 0) EIP  = program_base << 1 ;
+    if (EIP == 0)
+        EIP = program_base << 1;
     printf("Read %d words from program into memory.\n\n", ii);
 }
 
-void initialize(char *ucode_filename, char *program_filename, int num_prog_files) {
+void initialize(char *ucode_filename, char *program_filename, int num_prog_files)
+{
     int i;
     init_control_store(ucode_filename);
 
     init_memory();
 
-    for ( i = 0; i < num_prog_files; i++ ) {
-	load_program(program_filename);
-	while(*program_filename++ != '\0');
+    for (i = 0; i < num_prog_files; i++)
+    {
+        load_program(program_filename);
+        while (*program_filename++ != '\0')
+            ;
     }
     init_state();
-    
-    oldEIP=0;
+
+    oldEIP = 0;
 
     RUN_BIT = TRUE;
 }
 
-int main(int argc, char *argv[]) {
-    FILE * dumpsim_file;
+int main(int argc, char *argv[])
+{
+    FILE *dumpsim_file;
 
     /* Error Checking */
-    if (argc < 3) {
-	printf("Error: usage: %s <micro_code_file> <program_file_1> <program_file_2> ...\n",
-	       argv[0]);
-	exit(1);
+    if (argc < 3)
+    {
+        printf("Error: usage: %s <micro_code_file> <program_file_1> <program_file_2> ...\n",
+               argv[0]);
+        exit(1);
     }
 
     printf("x86 Simulator\n\n");
 
     initialize(argv[1], argv[2], argc - 2);
 
-    if ( (dumpsim_file = fopen( "dumpsim", "w" )) == NULL ) {
-	printf("Error: Can't open dumpsim file\n");
-	exit(-1);
+    if ((dumpsim_file = fopen("dumpsim", "w")) == NULL)
+    {
+        printf("Error: Can't open dumpsim file\n");
+        exit(-1);
     }
 
     while (1)
-	get_command(dumpsim_file);
+        get_command(dumpsim_file);
 }
 
-//other structures
+// other structures
 
 //DCACHE
 //address mapping: TTT TTT TTI IBO OOO
 typedef struct D$_TagStoreEntry_Struct{
     int valid[dcache_ways], tag[dcache_ways], dirty[dcache_ways], lru;
 } D$_TagStoreEntry;
-typedef struct D$_TagStore_Struct{
+typedef struct D$_TagStore_Struct
+{
     D$_TagStoreEntry dcache_tagstore[dcache_banks][dcache_sets];
 } D$_TagStore;
-typedef struct D$_DataStore_Struct{
+typedef struct D$_DataStore_Struct
+{
     int dcache_datastore[dcache_banks][dcache_sets][dcache_ways][cache_line_size];
 } D$_DataStore;
-typedef struct D$_Struct{
+typedef struct D$_Struct
+{
     D$_DataStore data;
     D$_TagStore tag;
     int bank_status[icache_banks];//0 means that its available, 1 means its being written tos
@@ -722,19 +820,22 @@ int get_dcache_idx_bits(int address){
 
 D$ dcache;
 
-//ICACHE
-//address mapping: TTT TTT TII IBO OOO
+// ICACHE
+// address mapping: TTT TTT TII IBO OOO
 
 typedef struct I$_TagStoreEntry_Struct{
     int valid[icache_ways], tag[icache_ways], dirty[icache_ways], lru; 
 } I$_TagStoreEntry;
-typedef struct I$_TagStore_Struct{
+typedef struct I$_TagStore_Struct
+{
     I$_TagStoreEntry icache_tagstore[icache_banks][icache_sets];
 } I$_TagStore;
-typedef struct I$_DataStore_Struct{
+typedef struct I$_DataStore_Struct
+{
     int icache_datastore[icache_banks][icache_sets][icache_ways][cache_line_size];
 } I$_DataStore;
-typedef struct I$_Struct{
+typedef struct I$_Struct
+{
     I$_DataStore data;
     I$_TagStore tag;
     int bank_status[icache_banks];//0 means that its available, 1 means its being written to
@@ -753,7 +854,8 @@ int get_icache_idx_bits(int address){
 typedef struct TLBEntry_Struct{
     int valid, present, permissions, vpn, pfn;
 } TLBEntry;
-typedef struct TLB_Struct{
+typedef struct TLB_Struct
+{
     TLBEntry entries[tlb_entries];
 } TLB;
 
@@ -786,9 +888,10 @@ typedef struct StoreQueue_Struct{
     int occupancy;
 } StoreQueue;
 StoreQueue sq;
+StoreQueue sq;
 
-//reservation_stations
-//note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
+// reservation_stations
+// note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
 
 typedef struct ReservationStation_Entry_Struct{
     int store_tag, entry_valid, updated_flags, old_bits;
@@ -797,18 +900,22 @@ typedef struct ReservationStation_Entry_Struct{
     int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
     int op1_index_valid, op1_index_tag, op1_index_val, op1_scale, op1_imm;
     int op1_ready, op1_combined_val, op1_load_alias, op1_load_alias_valid;
+    int op1_ready, op1_combined_val, op1_load_alias, op1_load_alias_valid;
     int op1_valid, op1_data;
     //operand 2
     int op2_mem_alias, op2_mem_alias_valid;
     int op2_addr_mode, op2_base_valid, op2_base_tag, op2_base_val;
     int op2_index_valid, op2_index_tag, op2_index_val, op2_scale, op2_imm;
     int op2_ready, op2_combined_val, op2_load_alias, op2_load_alias_valid;
+    int op2_ready, op2_combined_val, op2_load_alias, op2_load_alias_valid;
     int op2_valid, op2_data;
-    //I don't think you need the result in the entry? Correct me if I'm wrong
+    // I don't think you need the result in the entry? Correct me if I'm wrong
 } ReservationStation_Entry;
 
-typedef struct ReservationStation_Struct{
+typedef struct ReservationStation_Struct
+{
     ReservationStation_Entry entries[num_entries_per_RS];
+    int occupancy;
     int occupancy;
 } ReservationStation;
 
@@ -818,24 +925,28 @@ ReservationStation stations[num_stations];
 //entries are the actual entries waiting for the data to come back or waiting to send their address to the memory controller
 //pre-entries are what just got inserted this cycle and need to be sorted
 
-typedef struct MSHR_Entry_Struct{
+typedef struct MSHR_Entry_Struct
+{
     int valid, old_bits, origin, address, request_ID;
 } MSHR_Entry;
-typedef struct MSHR{
+typedef struct MSHR
+{
     MSHR_Entry entries[mshr_size];
     MSHR_Entry pre_entries[pre_mshr_size];
     int occupancy;
     int pre_occupancy;
 } MSHR;
 MSHR mshr;
-//btb
+// btb
 
-//Speculative Execution Tracker
+// Speculative Execution Tracker
 
-typedef struct SpecExe_Entry_Struct{
+typedef struct SpecExe_Entry_Struct
+{
     int valid, not_taken_target, taken_target, prediction, flag_alias;
 } SpecExe_Entry;
-typedef struct SpecExeTracker_Struct{
+typedef struct SpecExeTracker_Struct
+{
     SpecExe_Entry entries[spec_exe_tracker_size];
 } SpecExeTracker;
 
@@ -845,12 +956,14 @@ typedef struct Serializer_Entry_Struct{
     int valid, old_bits, sending_data;
     int data[cache_line_size], address;
     int rescue_lock, rescue_destination;
+    int rescue_lock, rescue_destination;
 } Serializer_Entry;
 
-typedef struct Serializer_Struct{
+typedef struct Serializer_Struct
+{
     Serializer_Entry entries[num_serializer_entries];
     int occupancy;
-} Serializer;  
+} Serializer;
 
 Serializer serializer;
 
@@ -860,83 +973,96 @@ typedef struct Deserializer_Entry_Struct{
     int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
     int data[cache_line_size], address;
     int revival_lock, revival_destination, revival_reqID;
+    int revival_lock, revival_destination, revival_reqID;
 } Deserializer_Entry;
 
-typedef struct Deserializer_Struct{
+typedef struct Deserializer_Struct
+{
     Deserializer_Entry entries[num_deserializer_entries];
     int occupancy;
 } Deserializer;
 
 Deserializer deserializer;
 
-//ROB
+// ROB
 
-typedef struct ROB_Entry_Struct{
-  int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
+typedef struct ROB_Entry_Struct
+{
+    int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
 } ROB_Entry;
-typedef struct ROB_Struct{
+typedef struct ROB_Struct
+{
     ROB_Entry entries[rob_size];
     int occupancy;
 } ROB;
 ROB rob;
 
-//functionality
+// functionality
 
-void mshr_preinserter(int address, int origin, int request_ID){
-    //origin 0 is icache
-    //origin 1 is dcache
-    //origin 2 is tlb
-    for(int i =0;i<pre_mshr_size;i++){
-        if(mshr.pre_entries[i].valid==FALSE){
-            mshr.pre_entries[i].valid=TRUE;
-            mshr.pre_entries[i].old_bits=mshr.pre_occupancy;
+void mshr_preinserter(int address, int origin, int request_ID)
+{
+    // origin 0 is icache
+    // origin 1 is dcache
+    // origin 2 is tlb
+    for (int i = 0; i < pre_mshr_size; i++)
+    {
+        if (mshr.pre_entries[i].valid == FALSE)
+        {
+            mshr.pre_entries[i].valid = TRUE;
+            mshr.pre_entries[i].old_bits = mshr.pre_occupancy;
             mshr.pre_occupancy++;
-            mshr.pre_entries[i].origin=origin;
-            mshr.pre_entries[i].address=address;
-            mshr.pre_entries[i].request_ID=request_ID;
+            mshr.pre_entries[i].origin = origin;
+            mshr.pre_entries[i].address = address;
+            mshr.pre_entries[i].request_ID = request_ID;
             return;
         }
     }
 }
 
-void translate_miss(int vpn){
+void translate_miss(int vpn)
+{
     int phys_addr = SBR + vpn * pte_size;
-    mshr_preinserter(phys_addr, 2);
+    mshr_preinserter(phys_addr, 2, 2);
 }
 
-
-void icache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], I$_TagStoreEntry *tag_metadata){
-    int bank = (addr>>3)&0x1;
-    int set = (addr>>4)&0x7;
+void icache_access(int addr, int *data_way0[cache_line_size], int *data_way1[cache_line_size], I$_TagStoreEntry *tag_metadata)
+{
+    int bank = (addr >> 3) & 0x1;
+    int set = (addr >> 4) & 0x7;
     *data_way0 = icache.data.icache_datastore[bank][set][0];
     *data_way1 = icache.data.icache_datastore[bank][set][1];
-    *tag_metadata=icache.tag.icache_tagstore[bank][set];
+    *tag_metadata = icache.tag.icache_tagstore[bank][set];
     return;
 }
 
-void dcache_access(int addr, int *data_way0[cache_line_size],int *data_way1[cache_line_size], int *data_way2[cache_line_size],int *data_way3[cache_line_size], D$_TagStoreEntry *tag_metadata){
-    int bank = (addr>>3)&0x1;
-    int set = (addr>>4)&0x3;
-    *data_way0 =dcache.data.dcache_datastore[bank][set][0];
-    *data_way1 =dcache.data.dcache_datastore[bank][set][1];
-    *data_way2 =dcache.data.dcache_datastore[bank][set][2];
-    *data_way3 =dcache.data.dcache_datastore[bank][set][3];
-    *tag_metadata =dcache.tag.dcache_tagstore[bank][set];
+void dcache_access(int addr, int *data_way0[cache_line_size], int *data_way1[cache_line_size], int *data_way2[cache_line_size], int *data_way3[cache_line_size], D$_TagStoreEntry *tag_metadata)
+{
+    int bank = (addr >> 3) & 0x1;
+    int set = (addr >> 4) & 0x3;
+    *data_way0 = dcache.data.dcache_datastore[bank][set][0];
+    *data_way1 = dcache.data.dcache_datastore[bank][set][1];
+    *data_way2 = dcache.data.dcache_datastore[bank][set][2];
+    *data_way3 = dcache.data.dcache_datastore[bank][set][3];
+    *tag_metadata = dcache.tag.dcache_tagstore[bank][set];
     return;
 }
 
-void tlb_access(int addr, int *physical_tag, int *tlb_hit){
-    int incoming_vpn = (addr>>12)&0x7;
-    for(int i =0;i<tlb_entries;i++){
-        if(tlb.entries[i].valid && tlb.entries[i].present){
-            if(incoming_vpn==tlb.entries[i].vpn){
-                *tlb_hit=1;
+void tlb_access(int addr, int *physical_tag, int *tlb_hit)
+{
+    int incoming_vpn = (addr >> 12) & 0x7;
+    for (int i = 0; i < tlb_entries; i++)
+    {
+        if (tlb.entries[i].valid && tlb.entries[i].present)
+        {
+            if (incoming_vpn == tlb.entries[i].vpn)
+            {
+                *tlb_hit = 1;
                 *physical_tag = tlb.entries[i].pfn;
                 return;
             }
         }
     }
-    *tlb_hit=0;
+    *tlb_hit = 0;
     translate_miss(incoming_vpn);
     return;
 }
@@ -1028,19 +1154,25 @@ bool dcache_paste(int address, int data[cache_line_size]){
 //stages
 
 int rob_broadcast_value, rob_broadcast_tag;
-void writeback_stage(){
+void writeback_stage()
+{
     // update to account for resteering/clearing on mispredicts
-    for(int i =0;i<rob_size;i++){
-        if((rob.entries[i].valid==1) && (rob.entries[i].old_bits==0) && (rob.entries[i].retired!=1) && (rob.entries[i].executed==1)){
-            if(rob.entries[i].speculative==TRUE){
+    for (int i = 0; i < rob_size; i++)
+    {
+        if ((rob.entries[i].valid == 1) && (rob.entries[i].old_bits == 0) && (rob.entries[i].retired != 1) && (rob.entries[i].executed == 1))
+        {
+            if (rob.entries[i].speculative == TRUE)
+            {
                 return;
             }
             rob_broadcast_value = rob.entries[i].value;
             rob_broadcast_tag = rob.entries[i].store_tag;
-            rob.entries[i].valid=0;
-            rob.entries[i].retired=1;
-            for(int j =0;j<rob_size;j++){
-                if((rob.entries[j].valid==TRUE) && (rob.entries[j].retired==FALSE)){
+            rob.entries[i].valid = 0;
+            rob.entries[i].retired = 1;
+            for (int j = 0; j < rob_size; j++)
+            {
+                if ((rob.entries[j].valid == TRUE) && (rob.entries[j].retired == FALSE))
+                {
                     rob.entries[j].old_bits--;
                 }
             }
@@ -1049,8 +1181,8 @@ void writeback_stage(){
     }
 }
 
-void memory_stage(){
-
+void memory_stage()
+{
 }
 
 void execute_stage(){
@@ -1746,8 +1878,10 @@ void decode_stage(){
 
 #define max_instruction_length 15
 int length;
-void predecode_stage(){
-    if(new_pipeline.predecode_valid){
+void predecode_stage()
+{
+    if (new_pipeline.predecode_valid)
+    {
         new_pipeline.decode_immSize = 0;
         unsigned char instruction[max_instruction_length];
         int index = new_pipeline.predecode_EIP & 0x003F;
@@ -1756,112 +1890,148 @@ void predecode_stage(){
         int len = 0;
         unsigned char prefix = -1;
         unsigned char opcode;
-        if(index < cache_line_size){
+        if (index < cache_line_size)
+        {
             part1 = 0;
         }
-        else if(index < 32){
+        else if (index < 32)
+        {
             part1 = 1;
         }
-        else if(index < 48){
+        else if (index < 48)
+        {
             part1 = 2;
         }
-        else if(index < 64){
+        else if (index < 64)
+        {
             part1 = 3;
         }
-        if((index % 16) > 1){ // need next cache line as well if the offset is over 1
+        if ((index % 16) > 1)
+        { // need next cache line as well if the offset is over 1
             part2 = (part1 + 1) % 4;
         }
         index = index % 16;
         int curPart = part1;
-        for(int i = 0; i < 15; i++){ //copy over instruction, using bytes from the second cache line if needed
+        for (int i = 0; i < 15; i++)
+        { // copy over instruction, using bytes from the second cache line if needed
             instruction[i] = new_pipeline.predecode_ibuffer[curPart][index];
             index++;
-            if(index > 15){
+            if (index > 15)
+            {
                 index = 0;
                 curPart = part2;
             }
         }
         int instIndex = 0;
-        if(instruction[instIndex] == 0x66 || instruction[instIndex] == 0x67){ //check prefix
+        if (instruction[instIndex] == 0x66 || instruction[instIndex] == 0x67)
+        { // check prefix
             len++;
             prefix = instruction[instIndex];
             instIndex++;
             opcode = instruction[instIndex];
         }
-        else{
+        else
+        {
             opcode = instruction[instIndex];
         }
-        if(!(instruction[instIndex] == 0x05 || instruction[instIndex] == 0x04)){ // if an instruction tha requires a mod/rm byte
-            len+=2;
+        if (!(instruction[instIndex] == 0x05 || instruction[instIndex] == 0x04))
+        { // if an instruction tha requires a mod/rm byte
+            len += 2;
             instIndex++;
             unsigned char mod_rm = instruction[instIndex];
-            if((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0){ //uses SIB byte
+            if ((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0)
+            { // uses SIB byte
+                new_pipeline.decode_needSIB = true;
                 len++;
             }
             int displacement = mod_rm & 0b11000000;
-            if(displacement == 1){
+            if (displacement == 1)
+            {
                 len++;
             }
-            if(displacement == 2){
-                len+=2;
+            if (displacement == 2)
+            {
+                len += 2;
             }
         }
-        else{
+        else
+        {
             len++;
         }
-        if(((opcode == 0x81) && prefix == 0x66) || ((opcode == 0x05) && prefix == 0x66)){ //determine size of immediates
-            len +=2;
+        if (((opcode == 0x81) && prefix == 0x66) || ((opcode == 0x05) && prefix == 0x66))
+        { // determine size of immediates
+            len += 2;
             new_pipeline.decode_immSize = 1;
         }
-        else if(opcode == 0x81 || opcode == 0x05){
-            len+=4;
+        else if (opcode == 0x81 || opcode == 0x05)
+        {
+            len += 4;
+            new_pipeline.decode_immSize = 0;
         }
-        else if((opcode == 04) || (opcode == 80) || (opcode == 83)){ // all instructions with 1 byte immediate
+        else if ((opcode == 04) || (opcode == 80) || (opcode == 83))
+        { // all instructions with 1 byte immediate
             len++;
         }
         new_pipeline.decode_instruction_length = len;
         new_pipeline.decode_valid = 1;
-        for(int i =0;i<max_instruction_length;i++){
+        for (int i = 0; i < max_instruction_length; i++)
+        {
             new_pipeline.decode_instruction_register[i] = instruction[i];
         }
         new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
+        new_pipeline.decode_opcode = opcode;
+        new_pipeline.decode_prefix = prefix;
         length = len;
     }
 }
 
-void fetch_stage(){
+void fetch_stage()
+{
     int offset = EIP & 0x3F;
-    int current_sector = offset/ibuffer_size;
-    int line_offset = offset%cache_line_size;
-    if(line_offset<=1){
-        if(ibuffer_valid[current_sector]==TRUE){
-            //latch predecode valid and ibuffer
-            new_pipeline.predecode_valid=TRUE;
+    int current_sector = offset / ibuffer_size;
+    int line_offset = offset % cache_line_size;
+    if (line_offset <= 1)
+    {
+        if (ibuffer_valid[current_sector] == TRUE)
+        {
+            // latch predecode valid and ibuffer
+            new_pipeline.predecode_valid = TRUE;
             new_pipeline.predecode_offset = offset;
             new_pipeline.predecode_current_sector = current_sector;
             new_pipeline.predecode_line_offset = line_offset;
-            for(int i =0;i<ibuffer_size;i++){
-                for(int j=0;j<cache_line_size;j++){
-                    new_pipeline.predecode_ibuffer[i][j]=ibuffer[i][j];
+            for (int i = 0; i < ibuffer_size; i++)
+            {
+                for (int j = 0; j < cache_line_size; j++)
+                {
+                    new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
                 }
             }
-        }else{
-            new_pipeline.predecode_valid=FALSE;
         }
-    }else{
-        if((ibuffer_valid[current_sector]==TRUE)&&(ibuffer_valid[(current_sector+1)%ibuffer_size]==TRUE)){
-            //latch predecode valid and ibuffer
-            new_pipeline.predecode_valid=TRUE;
+        else
+        {
+            new_pipeline.predecode_valid = FALSE;
+        }
+    }
+    else
+    {
+        if ((ibuffer_valid[current_sector] == TRUE) && (ibuffer_valid[(current_sector + 1) % ibuffer_size] == TRUE))
+        {
+            // latch predecode valid and ibuffer
+            new_pipeline.predecode_valid = TRUE;
             new_pipeline.predecode_offset = offset;
             new_pipeline.predecode_current_sector = current_sector;
             new_pipeline.predecode_line_offset = line_offset;
-            for(int i =0;i<ibuffer_size;i++){
-                for(int j=0;j<cache_line_size;j++){
-                    new_pipeline.predecode_ibuffer[i][j]=ibuffer[i][j];
+            for (int i = 0; i < ibuffer_size; i++)
+            {
+                for (int j = 0; j < cache_line_size; j++)
+                {
+                    new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
                 }
             }
-        }else{
-            new_pipeline.predecode_valid=FALSE;
+        }
+        else
+        {
+            new_pipeline.predecode_valid = FALSE;
         }
     }
 
@@ -1885,7 +2055,7 @@ void fetch_stage(){
         }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
             mshr_preinserter(EIP, 0, 0);
         }
-        bank_aligned=TRUE;
+        bank_aligned = TRUE;
     }
     if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
         icache_access(EIP+16,dataBits0,dataBits1,icache_tag_metadata);
@@ -1903,7 +2073,7 @@ void fetch_stage(){
         }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
             mshr_preinserter(EIP+16, 0, 0);
         }
-        bank_offset=TRUE;
+        bank_offset = TRUE;
     }
     if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE && bank_aligned==FALSE){
         icache_access(EIP+32,dataBits0,dataBits1,icache_tag_metadata);
@@ -1921,7 +2091,7 @@ void fetch_stage(){
         }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
             mshr_preinserter(EIP+32, 0, 0);
         }
-        bank_aligned=TRUE;
+        bank_aligned = TRUE;
     }
     if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE && bank_offset==FALSE){
         icache_access(EIP+48,dataBits0,dataBits1,icache_tag_metadata);
@@ -1939,9 +2109,9 @@ void fetch_stage(){
         }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
             mshr_preinserter(EIP+48, 0, 0);
         }
-        bank_offset=TRUE;
+        bank_offset = TRUE;
     }
-    
+
     new_pipeline.predecode_EIP = EIP;
     oldEIP = EIP;
     EIP +=length;
@@ -1972,43 +2142,53 @@ void mshr_inserter(){
                         mshr.entries[i].valid=TRUE;
                         mshr.entries[i].old_bits=mshr.occupancy;
                         mshr.occupancy++;
-                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
-                        mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
+                        mshr.entries[i].origin = mshr.pre_entries[j].origin;
+                        mshr.entries[i].address = mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID = mshr.pre_entries[j].request_ID;
                     }
                 }
             }
         }
     }
-    //insert dcache requests
-    for(int i = 0;i<pre_mshr_size;i++){
-        if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==1){
-            for(int j =0;j<mshr_size;j++){
-                if(mshr.occupancy<mshr_size){
-                    if(mshr.entries[i].valid==FALSE){
-                        mshr.entries[i].valid=TRUE;
-                        mshr.entries[i].old_bits=mshr.occupancy;
+    // insert dcache requests
+    for (int i = 0; i < pre_mshr_size; i++)
+    {
+        if (mshr.pre_entries[i].valid && mshr.pre_entries[i].origin == 1)
+        {
+            for (int j = 0; j < mshr_size; j++)
+            {
+                if (mshr.occupancy < mshr_size)
+                {
+                    if (mshr.entries[i].valid == FALSE)
+                    {
+                        mshr.entries[i].valid = TRUE;
+                        mshr.entries[i].old_bits = mshr.occupancy;
                         mshr.occupancy++;
-                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
-                        mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
+                        mshr.entries[i].origin = mshr.pre_entries[j].origin;
+                        mshr.entries[i].address = mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID = mshr.pre_entries[j].request_ID;
                     }
                 }
             }
         }
     }
-    //insert tlb requests
-    for(int i = 0;i<pre_mshr_size;i++){
-        if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==2){
-            for(int j =0;j<mshr_size;j++){
-                if(mshr.occupancy<mshr_size){
-                    if(mshr.entries[i].valid==FALSE){
-                        mshr.entries[i].valid=TRUE;
-                        mshr.entries[i].old_bits=mshr.occupancy;
+    // insert tlb requests
+    for (int i = 0; i < pre_mshr_size; i++)
+    {
+        if (mshr.pre_entries[i].valid && mshr.pre_entries[i].origin == 2)
+        {
+            for (int j = 0; j < mshr_size; j++)
+            {
+                if (mshr.occupancy < mshr_size)
+                {
+                    if (mshr.entries[i].valid == FALSE)
+                    {
+                        mshr.entries[i].valid = TRUE;
+                        mshr.entries[i].old_bits = mshr.occupancy;
                         mshr.occupancy++;
-                        mshr.entries[i].origin=mshr.pre_entries[j].origin;
-                        mshr.entries[i].address=mshr.pre_entries[j].address;
-                        mshr.entries[i].request_ID=mshr.pre_entries[j].request_ID;
+                        mshr.entries[i].origin = mshr.pre_entries[j].origin;
+                        mshr.entries[i].address = mshr.pre_entries[j].address;
+                        mshr.entries[i].request_ID = mshr.pre_entries[j].request_ID;
                     }
                 }
             }
@@ -2025,71 +2205,84 @@ void bus_arbiter(){
         metadata_bus.is_serializer_sending_data=FALSE;
         metadata_bus.burst_counter=0;
 
-        serializer.entries[serializer_entry_to_send].valid=0;
-        for(int i =0;i<num_serializer_entries;i++){
+        serializer.entries[serializer_entry_to_send].valid = 0;
+        for (int i = 0; i < num_serializer_entries; i++)
+        {
             serializer.entries[i].old_bits--;
         }
         serializer.occupancy--;
     }
 
-    //search mshr for oldest entry
-    int start_age=0;
+    // search mshr for oldest entry
+    int start_age = 0;
     int mshr_entry_to_send;
     int found_mshr_entry = FALSE;
-    for(int i =0;i<mshr_size;i++){
-        if((mshr.entries[i].valid==TRUE) && (mshr.entries[i].old_bits==start_age)){
-            if(metadata_bus.bank_status[get_bank_bits(mshr.entries[i].address)]==0){ 
-                //probing bank status on metadata bus to see if that bank is available
+    for (int i = 0; i < mshr_size; i++)
+    {
+        if ((mshr.entries[i].valid == TRUE) && (mshr.entries[i].old_bits == start_age))
+        {
+            if (metadata_bus.bank_status[get_bank_bits(mshr.entries[i].address)] == 0)
+            {
+                // probing bank status on metadata bus to see if that bank is available
                 mshr_entry_to_send = i;
-                found_mshr_entry=TRUE;
+                found_mshr_entry = TRUE;
                 break;
-            }else{
-                //if it isn't available check the next oldest mshr entry
+            }
+            else
+            {
+                // if it isn't available check the next oldest mshr entry
                 start_age++;
-                i=-1;
+                i = -1;
             }
         }
     }
     int found_serializer_entry = FALSE;
     int is_data_bus_active = metadata_bus.is_serializer_sending_data || metadata_bus.receive_enable;
-    if(is_data_bus_active==FALSE){
-        for(int i =0;i<num_serializer_entries;i++){
-            if((serializer.entries[i].valid==TRUE) && (serializer.entries[i].old_bits==0) && (serializer.entries[i].sending_data!=TRUE)){
-                serializer_entry_to_send=i;
-                found_serializer_entry=TRUE;
+    if (is_data_bus_active == FALSE)
+    {
+        for (int i = 0; i < num_serializer_entries; i++)
+        {
+            if ((serializer.entries[i].valid == TRUE) && (serializer.entries[i].old_bits == 0) && (serializer.entries[i].sending_data != TRUE))
+            {
+                serializer_entry_to_send = i;
+                found_serializer_entry = TRUE;
                 break;
             }
-        }    
+        }
     }
-    //considerations already accounted for: busy banks
-    //considerations accounted for here: full deserializers
-    //active when serializer has stuff it can send; initiates bursts
-    if(found_serializer_entry==TRUE && metadata_bus.deserializer_full==FALSE){
-        metadata_bus.serializer_address=serializer.entries[serializer_entry_to_send].address;
-        metadata_bus.burst_counter=0;
-        metadata_bus.is_serializer_sending_data=TRUE;
-        
-        data_bus.byte_wires[0]=serializer.entries[serializer_entry_to_send].data[0];
-        data_bus.byte_wires[1]=serializer.entries[serializer_entry_to_send].data[1];
-        data_bus.byte_wires[2]=serializer.entries[serializer_entry_to_send].data[2];
-        data_bus.byte_wires[3]=serializer.entries[serializer_entry_to_send].data[3];
+    // considerations already accounted for: busy banks
+    // considerations accounted for here: full deserializers
+    // active when serializer has stuff it can send; initiates bursts
+    if (found_serializer_entry == TRUE && metadata_bus.deserializer_full == FALSE)
+    {
+        metadata_bus.serializer_address = serializer.entries[serializer_entry_to_send].address;
+        metadata_bus.burst_counter = 0;
+        metadata_bus.is_serializer_sending_data = TRUE;
+
+        data_bus.byte_wires[0] = serializer.entries[serializer_entry_to_send].data[0];
+        data_bus.byte_wires[1] = serializer.entries[serializer_entry_to_send].data[1];
+        data_bus.byte_wires[2] = serializer.entries[serializer_entry_to_send].data[2];
+        data_bus.byte_wires[3] = serializer.entries[serializer_entry_to_send].data[3];
         return;
     }
-    //active when MSHR has stuff it can send
-    if(found_mshr_entry==TRUE){
-        metadata_bus.mshr_address=mshr.entries[mshr_entry_to_send].address;
-        metadata_bus.is_mshr_sending_addr=TRUE;
-        //destination stuff
+    // active when MSHR has stuff it can send
+    if (found_mshr_entry == TRUE)
+    {
+        metadata_bus.mshr_address = mshr.entries[mshr_entry_to_send].address;
+        metadata_bus.is_mshr_sending_addr = TRUE;
+        // destination stuff
         metadata_bus.origin = mshr.entries[mshr_entry_to_send].origin;
         metadata_bus.to_mem_request_ID = mshr.entries[mshr_entry_to_send].request_ID;
+        metadata_bus.to_mem_request_ID = mshr.entries[mshr_entry_to_send].request_ID;
 
-        mshr.entries[mshr_entry_to_send].valid=FALSE;
-        for(int i =0;i<mshr_size;i++){
+        mshr.entries[mshr_entry_to_send].valid = FALSE;
+        for (int i = 0; i < mshr_size; i++)
+        {
             mshr.entries[i].old_bits--;
         }
         mshr.occupancy--;
     }
-    //keep in mind that both the serializer and mshr can send stuff in the same cycle
+    // keep in mind that both the serializer and mshr can send stuff in the same cycle
 
     //account for serializer subsequent bursts 
     if(metadata_bus.is_serializer_sending_data==TRUE){
@@ -2102,24 +2295,29 @@ void bus_arbiter(){
     }
 }
 
-//architectural registers for the memory controller to keep whats happening happening
+// architectural registers for the memory controller to keep whats happening happening
 int addresses_to_banks[banks_in_DRAM];
 int reqID_to_bank[banks_in_DRAM];
+int reqID_to_bank[banks_in_DRAM];
 int addr_to_bank_cycle[banks_in_DRAM];
+int entry_to_bank[banks_in_DRAM];
 int entry_to_bank[banks_in_DRAM];
 
 #define cycles_to_access_bank 5
 
-void memory_controller(){
-    //will need to probe the metadatabus to see the current state to see what itll need to do this cycle
+void memory_controller()
+{
+    // will need to probe the metadatabus to see the current state to see what itll need to do this cycle
 
-    //if serializer is sending data, call the deserializer inserter
-    if(metadata_bus.is_serializer_sending_data==TRUE){
+    // if serializer is sending data, call the deserializer inserter
+    if (metadata_bus.is_serializer_sending_data == TRUE)
+    {
         deserializer_inserter();
     }
 
-    //handle incoming read requests
-    if(metadata_bus.is_mshr_sending_addr==TRUE){
+    // handle incoming read requests
+    if (metadata_bus.is_mshr_sending_addr == TRUE)
+    {
         int bkbits = get_bank_bits(metadata_bus.mshr_address);
         addresses_to_banks[bkbits] = metadata_bus.mshr_address;
         addr_to_bank_cycle[bkbits] = 0;
@@ -2160,8 +2358,10 @@ void memory_controller(){
                     data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[3];
 
                     addr_to_bank_cycle[i]++;
-                }else{
-                    continue;//wait until you can send stuff back
+                }
+                else
+                {
+                    continue; // wait until you can send stuff back
                 }
             }//continue load send to cpu
             else if(addr_to_bank_cycle[i]>cycles_to_access_bank){

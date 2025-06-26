@@ -1,4 +1,4 @@
-//address mapping: TTT TTT TII IBO OOO
+// address mapping: TTT TTT TII IBO OOO
 #include "config.h"
 #include <cmath>
 #include <optional> 
