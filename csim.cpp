@@ -2134,7 +2134,11 @@ void predecode_stage()
         {
             new_pipeline.decode_instruction_register[i] = instruction[i];
         }
-        for (int i = 0; i < dispimm_size)
+        int j = 0;
+        for (int i = instIndex; i < 15; i++){
+            new_pipeline.decode_dispimm[j] = instruction[i];
+            j++;
+        }
         new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
