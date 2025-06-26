@@ -582,12 +582,14 @@ void idump(FILE *dumpsim_file)
 
 void init_memory()
 {
-    int i;
-
-    for (i = 0; i < WORDS_IN_MEM; i++)
-    {
-        MEMORY[i][0] = 0;
-        MEMORY[i][1] = 0;
+    for (int i = 0; i < banks_in_DRAM; i++){
+        for(int j = 0;j< rows_per_bank;j++){
+            for(int k=0;k<columns_per_row;k++){
+                for(int l = 0;l<bytes_per_column;l++){
+                    dram.banks[i].rows[j].columns[k].bytes[l]=0;
+                }
+            }
+        }
     }
 }
 
