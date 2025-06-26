@@ -478,8 +478,13 @@ void mdump(FILE *dumpsim_file, int start, int stop)
 
     printf("\nMemory content [0x%04x..0x%04x] :\n", start, stop);
     printf("-------------------------------------\n");
-    for (address = (start >> 1); address <= (stop >> 1); address++)
-        printf("  0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, MEMORY[address][1], MEMORY[address][0]);
+    for (address = (start >> 1); address <= (stop >> 1); address++){
+        int i = (address & 0x30)>>4;
+        int j = (address & 0x7F00)>>8;
+        int k = (((address & 0xC)>>2) + ((address & 0xC0)>>4));
+        int l = (address & 0x3);
+        printf("  0x%04x (%d) : 0x%02x%02x\n", address << 1, address << 1, dram.banks[i].rows[j].columns[k].bytes[l+1], dram.banks[i].rows[j].columns[k].bytes[l]);
+    }
     printf("\n");
 
     /* dump the memory contents into the dumpsim file */
@@ -678,17 +683,23 @@ void load_program(char *program_filename)
     while (fscanf(prog, "%x\n", &word) != EOF)
     {
         /* Make sure it fits. */
+        printf("%x\n",word);
         if (program_base + ii >= WORDS_IN_MEM)
         {
             printf("Error: Program file %s is too long to fit in memory. %x\n",
                    program_filename, ii);
             exit(-1);
         }
-
         /* Write the word to memory array. */
-        MEMORY[program_base + ii][0] = word & 0x00FF;
-        MEMORY[program_base + ii][1] = (word >> 8) & 0x00FF;
-        ii++;
+        int address = program_base + ii;
+        printf("address %d\n",address);
+        int i = (address & 0x30)>>4;
+        int j = (address & 0x7F00)>>8;
+        int k = (((address & 0xC)>>2) + ((address & 0xC0)>>4));
+        int l = (address & 0x3);
+        dram.banks[i].rows[j].columns[k].bytes[l] = word & 0x00FF;
+        dram.banks[i].rows[j].columns[k].bytes[l+1] = (word >> 8) & 0x00FF;
+        ii+=2;
     }
 
     if (EIP == 0)
