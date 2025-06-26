@@ -1,4 +1,4 @@
-#define num_control_store_bits
+// #define num_control_store_bits
 #include "cassert"
 
 // icache
@@ -44,7 +44,7 @@
 #define bytes_per_column 4
 #define columns_per_row 16
 #define rows_per_bank 128
-#define banks 4
+#define banks_in_DRAM 4
 
 // table pools
 #define REGISTER_ALIAS_POOL_ENTRIES 64
@@ -59,6 +59,6 @@
 // VMEM
 #define SBR 0x500
 
-//serializers and deserializers
+// serializers and deserializers
 #define serializer_depth 2
 #define deserializer_depth 2
