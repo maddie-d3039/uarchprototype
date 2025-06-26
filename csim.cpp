@@ -31,11 +31,13 @@ void mshr_preinserter(int, int, int);
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
 void serializer_inserter(int, int data[cache_line_size]);
-void serializer_inserter();
 void deserializer_handler();
 void deserializer_inserter();
 void rescue_stager();
 void rescue_stager();
+void icache_write_from_databus();
+void dcache_write_from_databus();
+void tlb_write();
 
 #define control_store_rows 20 // arbitrary
 #define TRUE 1
@@ -124,17 +126,16 @@ typedef struct Metadata_Bus_Struct
     int is_mshr_sending_addr;
     int to_mem_request_ID;
     int to_cpu_request_ID;
-    int to_mem_request_ID;
-    int to_cpu_request_ID;
+    int from_mem_request_ID;
+    int from_cpu_request_ID;
     int is_serializer_sending_data;
     int burst_counter;
     int next_burst_counter;
-    int next_burst_counter;
+
     int receive_enable;
     int revival_in_progress;
     int current_revival_entry;
-    int revival_in_progress;
-    int current_revival_entry;
+
     int origin;
     int destination;
     int deserializer_full;
@@ -579,62 +580,6 @@ void idump(FILE *dumpsim_file)
     printf("\n");
 }
 
-void init_control_store(char *ucode_filename)
-{
-    FILE *ucode;
-    int i, j, index;
-    char line[200];
-
-    printf("Loading Control Store from file: %s\n", ucode_filename);
-
-    /* Open the micro-code file. */
-    if ((ucode = fopen(ucode_filename, "r")) == NULL)
-    {
-        printf("Error: Can't open micro-code file %s\n", ucode_filename);
-        exit(-1);
-    }
-
-    /* Read a line for each row in the control store. */
-    for (i = 0; i < control_store_rows; i++)
-    {
-        if (fscanf(ucode, "%[^\n]\n", line) == EOF)
-        {
-            printf("Error: Too few lines (%d) in micro-code file: %s\n",
-                   i, ucode_filename);
-            exit(-1);
-        }
-
-        /* Put in bits one at a time. */
-        index = 0;
-
-        for (j = 0; j < num_control_store_bits; j++)
-        {
-            /* Needs to find enough bits in line. */
-            if (line[index] == '\0')
-            {
-                printf("Error: Too few control bits in micro-code file: %s\nLine: %d\n",
-                       ucode_filename, i);
-                exit(-1);
-            }
-            if (line[index] != '0' && line[index] != '1')
-            {
-                printf("Error: Unknown value in micro-code file: %s\nLine: %d, Bit: %d\n",
-                       ucode_filename, i, j);
-                exit(-1);
-            }
-
-            /* Set the bit in the Control Store. */
-            CONTROL_STORE[i][j] = (line[index] == '0') ? 0 : 1;
-            index++;
-        }
-        /* Warn about extra bits in line. */
-        if (line[index] != '\0')
-            printf("Warning: Extra bit(s) in control store file %s. Line: %d\n",
-                   ucode_filename, i);
-    }
-    printf("\n");
-}
-
 void init_memory()
 {
     int i;
@@ -749,10 +694,9 @@ void load_program(char *program_filename)
     printf("Read %d words from program into memory.\n\n", ii);
 }
 
-void initialize(char *ucode_filename, char *program_filename, int num_prog_files)
+void initialize(char *program_filename, int num_prog_files)
 {
     int i;
-    init_control_store(ucode_filename);
 
     init_memory();
 
@@ -774,16 +718,16 @@ int main(int argc, char *argv[])
     FILE *dumpsim_file;
 
     /* Error Checking */
-    if (argc < 3)
+    if (argc < 2)
     {
-        printf("Error: usage: %s <micro_code_file> <program_file_1> <program_file_2> ...\n",
+        printf("Error: usage: %s <program_file_1> <program_file_2> ...\n",
                argv[0]);
         exit(1);
     }
 
     printf("x86 Simulator\n\n");
 
-    initialize(argv[1], argv[2], argc - 2);
+    initialize(argv[1], argc - 1);
 
     if ((dumpsim_file = fopen("dumpsim", "w")) == NULL)
     {
@@ -905,7 +849,6 @@ typedef struct StoreQueue_Struct
     int occupancy;
 } StoreQueue;
 StoreQueue sq;
-StoreQueue sq;
 
 // reservation_stations
 // note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
@@ -918,14 +861,14 @@ typedef struct ReservationStation_Entry_Struct
     int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
     int op1_index_valid, op1_index_tag, op1_index_val, op1_scale, op1_imm;
     int op1_ready, op1_combined_val, op1_load_alias, op1_load_alias_valid;
-    int op1_ready, op1_combined_val, op1_load_alias, op1_load_alias_valid;
+
     int op1_valid, op1_data;
     // operand 2
     int op2_mem_alias, op2_mem_alias_valid;
     int op2_addr_mode, op2_base_valid, op2_base_tag, op2_base_val;
     int op2_index_valid, op2_index_tag, op2_index_val, op2_scale, op2_imm;
     int op2_ready, op2_combined_val, op2_load_alias, op2_load_alias_valid;
-    int op2_ready, op2_combined_val, op2_load_alias, op2_load_alias_valid;
+
     int op2_valid, op2_data;
     // I don't think you need the result in the entry? Correct me if I'm wrong
 } ReservationStation_Entry;
@@ -934,7 +877,7 @@ typedef struct ReservationStation_Struct
 {
     ReservationStation_Entry entries[num_entries_per_RS];
     int occupancy;
-    int occupancy;
+
 } ReservationStation;
 
 #define num_stations 2
@@ -975,7 +918,7 @@ typedef struct Serializer_Entry_Struct
     int valid, old_bits, sending_data;
     int data[cache_line_size], address;
     int rescue_lock, rescue_destination;
-    int rescue_lock, rescue_destination;
+
 } Serializer_Entry;
 
 typedef struct Serializer_Struct
@@ -993,7 +936,7 @@ typedef struct Deserializer_Entry_Struct
     int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
     int data[cache_line_size], address;
     int revival_lock, revival_destination, revival_reqID;
-    int revival_lock, revival_destination, revival_reqID;
+
 } Deserializer_Entry;
 
 typedef struct Deserializer_Struct
@@ -2520,11 +2463,8 @@ void bus_arbiter()
 // architectural registers for the memory controller to keep whats happening happening
 int addresses_to_banks[banks_in_DRAM];
 int reqID_to_bank[banks_in_DRAM];
-int reqID_to_bank[banks_in_DRAM];
 int addr_to_bank_cycle[banks_in_DRAM];
 int entry_to_bank[banks_in_DRAM];
-int entry_to_bank[banks_in_DRAM];
-
 #define cycles_to_access_bank 5
 
 void memory_controller()
