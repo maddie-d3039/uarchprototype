@@ -2,6 +2,7 @@
 
 class RAT
 {
+public:
     enum Registers
     {
         EAX_idx,
