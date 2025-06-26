@@ -378,6 +378,7 @@ typedef struct PipeState_Entry_Struct{
       decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
       decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
       decode_is_modrm, decode_modrm, decode_is_sib, decode_sib, decode_dispimm[dispimm_size],
+      decode_1bdisp, decode_4bdisp, decode_1bimm, decode_2bimm, decode_4bimm,
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
       agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset,
@@ -1914,7 +1915,7 @@ void predecode_stage()
         int curPart = part1;
         for (int i = 0; i < 15; i++)
         { // copy over instruction, using bytes from the second cache line if needed
-            instruction[i] = new_pipeline.predecode_ibuffer[curPart][index];
+            instruction[i] = pipeline.predecode_ibuffer[curPart][index];
             index++;
             if (index > 15)
             {
@@ -1941,7 +1942,7 @@ void predecode_stage()
             unsigned char mod_rm = instruction[instIndex];
             if ((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0)
             { // uses SIB byte
-                new_pipeline.decode_needSIB = true;
+                new_pipeline.decode_is_sib = true;
                 len++;
             }
             int displacement = mod_rm & 0b11000000;
