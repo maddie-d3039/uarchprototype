@@ -2050,50 +2050,72 @@ void predecode_stage()
         { // check prefix
             len++;
             prefix = instruction[instIndex];
-            instIndex++;
+            instIndex ++;
             opcode = instruction[instIndex];
+            instIndex++;
+            new_pipeline.decode_is_prefix = 1;
         }
         else
         {
             opcode = instruction[instIndex];
-        }
-        if (!(instruction[instIndex] == 0x05 || instruction[instIndex] == 0x04))
-        { // if an instruction tha requires a mod/rm byte
-            len += 2;
             instIndex++;
+            new_pipeline.decode_is_prefix = 0;
+        }
+        if (!(opcode == 0x05 || opcode == 0x04))
+        { // if an instruction tha requires a mod/rm byte
+            len += 1;
+            new_pipeline.decode_is_modrm = 1;
             unsigned char mod_rm = instruction[instIndex];
+            instIndex++;
+            new_pipeline.decode_modrm = mod_rm;
             if ((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0)
             { // uses SIB byte
                 new_pipeline.decode_is_sib = true;
                 len++;
+                new_pipeline.decode_sib = instruction[instIndex];
+                instIndex++;
+            }
+            else{
+                new_pipeline.decode_is_sib = false;
             }
             int displacement = mod_rm & 0b11000000;
             if (displacement == 1)
             {
                 len++;
+                 new_pipeline.decode_1bdisp = true;
             }
             if (displacement == 2)
             {
-                len += 2;
+                len += 4;
+                new_pipeline.decode_4bdisp = true;
             }
         }
         else
         {
-            len++;
+            new_pipeline.decode_is_modrm = false;
         }
         if (((opcode == 0x81) && prefix == 0x66) || ((opcode == 0x05) && prefix == 0x66))
         { // determine size of immediates
             len += 2;
-            new_pipeline.decode_immSize = 1;
+            new_pipeline.decode_immSize = 2;
+            new_pipeline.decode_2bimm = true;
         }
         else if (opcode == 0x81 || opcode == 0x05)
         {
             len += 4;
-            new_pipeline.decode_immSize = 0;
+            new_pipeline.decode_immSize = 4;
+            new_pipeline.decode_4bimm = true;
         }
         else if ((opcode == 04) || (opcode == 80) || (opcode == 83))
         { // all instructions with 1 byte immediate
             len++;
+            new_pipeline.decode_immSize = 1;
+            new_pipeline.decode_1bimm = true;
+        }
+        int j = 0;
+        for(int i = instIndex; i < 15; i++){ //copy over all displacement and immediate 
+            new_pipeline.decode_dispimm[j] = instruction[instIndex];
+            j++;
         }
         new_pipeline.decode_instruction_length = len;
         new_pipeline.decode_valid = 1;
@@ -2101,6 +2123,7 @@ void predecode_stage()
         {
             new_pipeline.decode_instruction_register[i] = instruction[i];
         }
+        for (int i = 0; i < dispimm_size)
         new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
