@@ -28,7 +28,7 @@ void memory_controller();
 void bus_arbiter();
 void mshr_preinserter(int, int, int);
 void mshr_inserter();
-void serializer_inserter();
+void serializer_inserter(int, int data[cache_line_size]);
 void deserializer_handler();
 void deserializer_inserter();
 void rescue_stager();
