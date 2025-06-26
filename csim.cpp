@@ -26,12 +26,12 @@ void memory_stage();
 void writeback_stage();
 void memory_controller();
 void bus_arbiter();
-void mshr_preinserter(int, int);
+void mshr_preinserter(int, int, int);
 void mshr_inserter();
-void serializer_handler();
 void serializer_inserter();
 void deserializer_handler();
 void deserializer_inserter();
+void rescue_stager();
 
 #define control_store_rows 20 //arbitrary
 #define TRUE  1
@@ -40,10 +40,10 @@ void deserializer_inserter();
 enum CS_BITS {
   operation,
   updated_flags,
-  op1_addr_mode,
-  op2_addr_mode,
   is_control_instruction,
   control_instruction_type,
+  op1_addr_mode,
+  op2_addr_mode,
   is_op1_needed,
   is_op2_needed,
   num_control_store_bits
@@ -109,16 +109,23 @@ typedef struct Metadata_Bus_Struct{
     int serializer_address;
     int store_address;
     int is_mshr_sending_addr;
-    int request_ID;
+    int to_mem_request_ID;
+    int to_cpu_request_ID;
     int is_serializer_sending_data;
     int burst_counter;
+    int next_burst_counter;
     int receive_enable;
+    int revival_in_progress;
+    int current_revival_entry;
     int origin;
     int destination;
     int deserializer_full;
+    int deserializer_can_store=1;
+    int deserializer_bank_targets[banks_in_DRAM];
     int deserializer_target;//oh this is for the deserializer that will be stored into next
-    int serializer_available;//equivalent to allow evictions
-    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 waiting to send loaded data
+    int deserializer_next_entry;
+    int serializer_available=1;//equivalent to allow evictions
+    int bank_status[banks_in_DRAM]; //0 available, 1 performing load, 2 performing store, 3 attempting revival
     int bank_destinations[banks_in_DRAM];
 }Metadata_Bus;
 
@@ -296,8 +303,13 @@ struct MemoryAliasPool {
     }
 };
 
+RegisterAliasPool regpool;
+FlagAliasPool flagpool;
+MemoryAliasPool mempool;
+
 
 #define ibuffer_size 4
+#define dispimm_size 14
 int ibuffer[ibuffer_size][cache_line_size];
 int ibuffer_valid[ibuffer_size];
 
@@ -305,6 +317,8 @@ typedef struct PipeState_Entry_Struct{
   int predecode_valid,predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
       predecode_offset, predecode_current_sector, predecode_line_offset,
       decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
+      decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
+      decode_is_modrm, decode_modrm, decode_is_sib, decode_sib, decode_dispimm[dispimm_size],
       agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
       agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
       agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset,
@@ -337,8 +351,16 @@ void cycle(){
     memory_controller();
     bus_arbiter();
     mshr_inserter();
-    serializer_handler();
     deserializer_handler();
+    if(metadata_bus.receive_enable && metadata_bus.destination==0){
+        icache_write_from_databus();
+    }
+    if(metadata_bus.receive_enable && metadata_bus.destination==1){
+        dcache_write_from_databus();
+    }
+    if(metadata_bus.receive_enable && metadata_bus.destination==2){
+        tlb_write();
+    }
     pipeline=new_pipeline;
     cycle_count++;
 }
@@ -677,11 +699,7 @@ int main(int argc, char *argv[]) {
 //DCACHE
 //address mapping: TTT TTT TTI IBO OOO
 typedef struct D$_TagStoreEntry_Struct{
-    int valid_way0, tag_way0, dirty_way0,
-        valid_way1, tag_way1, dirty_way1,
-        valid_way2, tag_way2, dirty_way2,
-        valid_way3, tag_way3, dirty_way3,
-        lru; 
+    int valid[dcache_ways], tag[dcache_ways], dirty[dcache_ways], lru;
 } D$_TagStoreEntry;
 typedef struct D$_TagStore_Struct{
     D$_TagStoreEntry dcache_tagstore[dcache_banks][dcache_sets];
@@ -692,7 +710,15 @@ typedef struct D$_DataStore_Struct{
 typedef struct D$_Struct{
     D$_DataStore data;
     D$_TagStore tag;
+    int bank_status[icache_banks];//0 means that its available, 1 means its being written tos
 } D$;
+
+int get_dcache_bank_bits(int address){
+    return (address>>3)&0x1;
+}
+int get_dcache_idx_bits(int address){
+    return (address>>4)&0x3;
+}
 
 D$ dcache;
 
@@ -700,9 +726,7 @@ D$ dcache;
 //address mapping: TTT TTT TII IBO OOO
 
 typedef struct I$_TagStoreEntry_Struct{
-    int valid_way0, tag_way0, dirty_way0,
-        valid_way1, tag_way1, dirty_way1,
-        lru; 
+    int valid[icache_ways], tag[icache_ways], dirty[icache_ways], lru; 
 } I$_TagStoreEntry;
 typedef struct I$_TagStore_Struct{
     I$_TagStoreEntry icache_tagstore[icache_banks][icache_sets];
@@ -713,9 +737,17 @@ typedef struct I$_DataStore_Struct{
 typedef struct I$_Struct{
     I$_DataStore data;
     I$_TagStore tag;
+    int bank_status[icache_banks];//0 means that its available, 1 means its being written to
 } I$;
 
 I$ icache;
+
+int get_icache_bank_bits(int address){
+    return (address>>4)&0x1;
+}
+int get_icache_idx_bits(int address){
+    return (address>>5)&0x7;
+}
 
 //tlb
 typedef struct TLBEntry_Struct{
@@ -728,45 +760,60 @@ typedef struct TLB_Struct{
 TLB tlb;
 
 //load queue
+#define max_lq_size 16
 typedef struct LoadQueue_Entry_Struct{
-
+    int entry_valid;
+    int address_valid, address_tag, address;
+    int old_bits;
+    int valid, tag, data[bytes_on_data_bus];
 } LoadQueue_Entry;
 typedef struct LoadQueue_Struct{
-
+    LoadQueue_Entry entries[max_lq_size];
+    int occupancy;
 } LoadQueue;
+LoadQueue lq;
 //store queue
+#define max_sq_size 16
 typedef struct StoreQueue_Entry_Struct{
-
+    int entry_valid;
+    int address_valid, address_tag, address;
+    int matchAddress;
+    int old_bits,written;
+    int valid, tag, data[bytes_on_data_bus];
 } StoreQueue_Entry;
 typedef struct StoreQueue_Struct{
-
+    StoreQueue_Entry entries[max_sq_size];
+    int occupancy;
 } StoreQueue;
+StoreQueue sq;
 
 //reservation_stations
 //note that the RS will need the internal adders/shifters in whatever reservation station handler function we make
 
 typedef struct ReservationStation_Entry_Struct{
-    int store_tag, entry_valid, updated_flags;
+    int store_tag, entry_valid, updated_flags, old_bits;
     //operand 1
-    int op1_mem_alias, op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
+    int op1_mem_alias, op1_mem_alias_valid;
+    int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
     int op1_index_valid, op1_index_tag, op1_index_val, op1_scale, op1_imm;
-    int op1_ready, op1_combined_val, op1_load_alias;
+    int op1_ready, op1_combined_val, op1_load_alias, op1_load_alias_valid;
     int op1_valid, op1_data;
     //operand 2
-    int op2_mem_alias, op2_addr_mode, op2_base_valid, op2_base_tag, op2_base_val;
+    int op2_mem_alias, op2_mem_alias_valid;
+    int op2_addr_mode, op2_base_valid, op2_base_tag, op2_base_val;
     int op2_index_valid, op2_index_tag, op2_index_val, op2_scale, op2_imm;
-    int op2_ready, op2_combined_val, op2_load_alias;
+    int op2_ready, op2_combined_val, op2_load_alias, op2_load_alias_valid;
     int op2_valid, op2_data;
     //I don't think you need the result in the entry? Correct me if I'm wrong
 } ReservationStation_Entry;
 
 typedef struct ReservationStation_Struct{
     ReservationStation_Entry entries[num_entries_per_RS];
+    int occupancy;
 } ReservationStation;
 
-ReservationStation add_RS;
-ReservationStation or_RS;
-
+#define num_stations 2
+ReservationStation stations[num_stations];
 //mshr
 //entries are the actual entries waiting for the data to come back or waiting to send their address to the memory controller
 //pre-entries are what just got inserted this cycle and need to be sorted
@@ -793,9 +840,11 @@ typedef struct SpecExeTracker_Struct{
 } SpecExeTracker;
 
 //Seralizers
+#define max_serializer_occupancy 8
 typedef struct Serializer_Entry_Struct{
     int valid, old_bits, sending_data;
     int data[cache_line_size], address;
+    int rescue_lock, rescue_destination;
 } Serializer_Entry;
 
 typedef struct Serializer_Struct{
@@ -806,10 +855,11 @@ typedef struct Serializer_Struct{
 Serializer serializer;
 
 //Deserializers
-
+#define max_deserializer_occupancy 8
 typedef struct Deserializer_Entry_Struct{
     int valid, old_bits, writing_data_to_DRAM, receiving_data_from_data_bus;
     int data[cache_line_size], address;
+    int revival_lock, revival_destination, revival_reqID;
 } Deserializer_Entry;
 
 typedef struct Deserializer_Struct{
@@ -895,7 +945,85 @@ void tlb_write(){
     
 }
 
+void icache_write_from_databus(){
+    int bkbits = get_icache_bank_bits(metadata_bus.store_address);
+    int idxbits = get_icache_idx_bits(metadata_bus.store_address);
+    //evict if needed, if not can do the write
+    if(icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (icache.tag.icache_tagstore[bkbits][idxbits].tag[icache.tag.icache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru]);
+        icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru=FALSE];
+    }else{
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+0]=data_bus.byte_wires[metadata_bus.burst_counter*4+0];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+1]=data_bus.byte_wires[metadata_bus.burst_counter*4+1];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+2]=data_bus.byte_wires[metadata_bus.burst_counter*4+2];
+        icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+3]=data_bus.byte_wires[metadata_bus.burst_counter*4+3];
 
+        metadata_bus.next_burst_counter++;
+    }
+}
+
+//from rescue
+bool icache_paste(int address, int data[cache_line_size]){
+    int bkbits = get_icache_bank_bits(address);
+    int idxbits = get_icache_idx_bits(address);
+    //evict if needed, if not can do the write
+    if(icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (icache.tag.icache_tagstore[bkbits][idxbits].tag[icache.tag.icache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru]);
+        icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru=FALSE];
+        return false;
+    }else{
+        for(int i =0;i<cache_line_size;i++){
+            icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][0]=data[0];
+        }
+        return true;
+    }
+}
+
+void dcache_write_from_databus(){
+    int bkbits = get_dcache_bank_bits(metadata_bus.store_address);
+    int idxbits = get_dcache_idx_bits(metadata_bus.store_address);
+    //evict if needed, if not can do the write
+    if(dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (dcache.tag.dcache_tagstore[bkbits][idxbits].tag[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru]);
+        dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]=FALSE;
+    }else{
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+0]=data_bus.byte_wires[metadata_bus.burst_counter*4+0];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+1]=data_bus.byte_wires[metadata_bus.burst_counter*4+1];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+2]=data_bus.byte_wires[metadata_bus.burst_counter*4+2];
+        dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter*4+3]=data_bus.byte_wires[metadata_bus.burst_counter*4+3];
+
+        metadata_bus.next_burst_counter++;
+    }
+}
+
+//from rescue
+bool dcache_paste(int address, int data[cache_line_size]){
+    int bkbits = get_dcache_bank_bits(address);
+    int idxbits = get_dcache_idx_bits(address);
+    //evict if needed, if not can do the write
+    if(dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]==TRUE){
+        //reconstruct address
+        int reconstructed_address = (dcache.tag.dcache_tagstore[bkbits][idxbits].tag[dcache.tag.dcache_tagstore[bkbits][idxbits].lru]<<7)+(idxbits<<5)+(bkbits<<4);
+        
+        serializer_inserter(reconstructed_address, dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru]);
+        dcache.tag.dcache_tagstore[bkbits][idxbits].valid[dcache.tag.dcache_tagstore[bkbits][idxbits].lru=FALSE];
+        return false;
+    }else{
+        for(int i =0;i<cache_line_size;i++){
+            dcache.data.dcache_datastore[bkbits][idxbits][dcache.tag.dcache_tagstore[bkbits][idxbits].lru][0]=data[0];
+        }
+        return true;
+    }
+}
 
 //stages
 
@@ -929,28 +1057,691 @@ void execute_stage(){
 
 }
 
-void register_rename_stage(){
-    if(pipeline.rr_valid == 1){
+enum addressing_modes{
+    immediate,
+    reg,
+    direct, 
+    indirect, 
+    based, 
+    indexed, 
+    based_indexed, 
+    based_indexed_disp, 
+    relative, 
+    num_addr_modes
+} addressing_modes;
 
-    }else{
+enum reservation_stations{
+    add, or
+} reservation_stations;
+
+int regren_stall;
+void register_rename_stage(){
+    if(pipeline.rr_valid == FALSE){
         return;
+    }
+
+    //precompute the RS entry that will
+    //be written into and write directly to that
+    ReservationStation thisRS;
+    thisRS=stations[pipeline.rr_operation];
+    bool found_RS_entry=false;
+    int entry_index;
+    for(int i =0;i<num_entries_per_RS;i++){
+        if(thisRS.entries[i].entry_valid==FALSE){
+            entry_index=i;
+            found_RS_entry=true;
+            break;
+        }
+    }
+    if(found_RS_entry==false){
+    //stall if RS is full
+        regren_stall=TRUE;
+        return;
+    }else{
+    //also need to stall if addressing mode indicates that the instruction requires memory
+    //and the load or store queue is full
+        if(op1_addr_mode>reg){
+            if(sq.occupancy==max_sq_size){
+                regren_stall=TRUE;
+                return;
+            }else if(lq.occupancy==max_lq_size){
+                regren_stall=TRUE;
+                return;
+            }
+        }else if(op2_addr_mode>reg){
+            if(lq.occupancy==max_lq_size){
+                regren_stall=TRUE;
+                return;
+            }
+        }
+    }
+
+    
+    //handle in progress operand generation through internal arithmetic
+
+    //iterate through the reservation stations and for each station,
+    //do the internal arithmetic and load queue allocation for one entry
+    for(int i =0;i<num_stations;i++){
+        int search_age=0;
+        for(int j=0;j<num_entries_per_RS;j++){
+            bool evaluated_op1=false;
+            bool evaluated_op2=false;
+            if(thisRS.entries[j].old_bits == search_age){
+                if(thisRS.entries[j].op1_ready==FALSE || thisRS.entries[j].op2_ready==FALSE){
+                    //compute operand depending on addressing mode
+                    //note that we don't need to compute for indirect, but we do need it to be valid in order to put it in the lq
+
+                    //operand 1
+                    if(thisRS.entries[j].op1_addr_mode==reg || thisRS.entries[j].op1_addr_mode==indirect){
+                        if(thisRS.entries[j].op1_base_valid==TRUE && thisRS.entries[j].op1_ready==FALSE){
+                            thisRS.entries[j].op1_ready=TRUE;
+                            thisRS.entries[j].op1_combined_val=thisRS.entries[j].op1_base_val;
+                            evaluated_op1=true;
+                        }
+                    }else if(thisRS.entries[j].op1_addr_mode==based){
+                        if(thisRS.entries[j].op1_base_valid==TRUE && thisRS.entries[j].op1_ready==FALSE){
+                            thisRS.entries[j].op1_ready=TRUE;
+                            thisRS.entries[j].op1_combined_val=thisRS.entries[j].op1_base_val + thisRS.entries[j].op1_imm;
+                            evaluated_op1=true;
+                        }
+                    }else if(thisRS.entries[j].op1_addr_mode==indexed){
+                        if(thisRS.entries[j].op1_index_valid==TRUE && thisRS.entries[j].op1_ready==FALSE){
+                            thisRS.entries[j].op1_ready=TRUE;
+                            thisRS.entries[j].op1_combined_val=thisRS.entries[j].op1_index_val * thisRS.entries[j].op1_scale
+                                                                        + thisRS.entries[j].op1_imm;
+                            evaluated_op1=true;
+                        }
+                    }else if(thisRS.entries[j].op1_addr_mode==based_indexed){
+                        if(thisRS.entries[j].op1_base_valid==TRUE && thisRS.entries[j].op1_index_valid==TRUE 
+                            && thisRS.entries[j].op1_ready==FALSE){
+                            thisRS.entries[j].op1_ready=TRUE;
+                            thisRS.entries[j].op1_combined_val=thisRS.entries[j].op1_base_val + thisRS.entries[j].op1_index_val * thisRS.entries[j].op1_scale;
+                            evaluated_op1=true;
+                        }
+                    }else if(thisRS.entries[j].op1_addr_mode==based_indexed_disp){
+                        if(thisRS.entries[j].op1_base_valid==TRUE && thisRS.entries[j].op1_index_valid==TRUE 
+                            && thisRS.entries[j].op1_ready==FALSE){
+                            thisRS.entries[j].op1_ready=TRUE;
+                            thisRS.entries[j].op1_combined_val=thisRS.entries[j].op1_base_val 
+                                                                        + thisRS.entries[j].op1_index_val * thisRS.entries[j].op1_scale
+                                                                        + thisRS.entries[j].op1_imm;
+                            evaluated_op1=true;
+                        }
+                    }
+                    //operand 2
+                    if(thisRS.entries[j].op2_addr_mode==reg || thisRS.entries[j].op2_addr_mode==indirect){
+                        if(thisRS.entries[j].op2_base_valid==TRUE && thisRS.entries[j].op2_ready==FALSE){
+                            thisRS.entries[j].op2_ready=TRUE;
+                            thisRS.entries[j].op2_combined_val=thisRS.entries[j].op2_base_val;
+                            evaluated_op2=true;
+                        }
+                    }else if(thisRS.entries[j].op2_addr_mode==based){
+                        if(thisRS.entries[j].op2_base_valid==TRUE && thisRS.entries[j].op2_ready==FALSE){
+                            thisRS.entries[j].op2_ready=TRUE;
+                            thisRS.entries[j].op2_combined_val=thisRS.entries[j].op2_base_val + thisRS.entries[j].op2_imm;
+                            evaluated_op2=true;
+                        }
+                    }else if(thisRS.entries[j].op2_addr_mode==indexed){
+                        if(thisRS.entries[j].op2_index_valid==TRUE && thisRS.entries[j].op2_ready==FALSE){
+                            thisRS.entries[j].op2_ready=TRUE;
+                            thisRS.entries[j].op2_combined_val=thisRS.entries[j].op2_index_val * thisRS.entries[j].op2_scale + thisRS.entries[j].op2_imm;
+                            evaluated_op2=true;
+                        }
+                    }else if(thisRS.entries[j].op2_addr_mode==based_indexed){
+                        if(thisRS.entries[j].op2_base_valid==TRUE && thisRS.entries[j].op2_index_valid==TRUE 
+                            && thisRS.entries[j].op2_ready==FALSE){
+                            thisRS.entries[j].op2_ready=TRUE;
+                            thisRS.entries[j].op2_combined_val=thisRS.entries[j].op2_base_val + thisRS.entries[j].op2_index_val * thisRS.entries[j].op2_scale;
+                            evaluated_op2=true;
+                        }
+                    }else if(thisRS.entries[j].op2_addr_mode==based_indexed_disp){
+                        if(thisRS.entries[j].op2_base_valid==TRUE && thisRS.entries[j].op2_index_valid==TRUE 
+                            && thisRS.entries[j].op2_ready==FALSE){
+                            thisRS.entries[j].op2_ready=TRUE;
+                            thisRS.entries[j].op2_combined_val=thisRS.entries[j].op2_base_val 
+                                                                        + thisRS.entries[j].op2_index_val * thisRS.entries[j].op2_scale
+                                                                        + thisRS.entries[j].op2_imm;
+                            evaluated_op2=true;
+                        }
+                    }
+                    //compare operands to store queue and set load alias or data if you can, if not have to allocate load queue
+                    //remember dont put in lq if reg or direct, reg shouldnt go in lq and direct has already been allocated
+                    //operand 1 search - do the search if addressing mode not immediate, register, or direct
+                    if(thisRS.entries[j].op1_addr_mode>direct){
+                        bool found_data=false;
+                        bool found_tag=false;
+                        int current_old_bits = max_sq_size;
+                        for(int k =0;k<max_sq_size;k++){
+                            if(sq.entries[k].entry_valid==TRUE && sq.entries[k].address==thisRS.entries[j].op1_combined_val &&
+                            sq.entries[k].old_bits<current_old_bits){
+                                current_old_bits=sq.entries[k].old_bits;
+                                if(sq.entries[k].valid==TRUE){
+                                    found_data=true;
+                                    for(int l=0;l<bytes_on_data_bus;l++){
+                                        thisRS.entries[j].op1_data=sq.entries[k].data[l];
+                                    }
+                                    thisRS.entries[j].op1_valid=TRUE;
+                                }else{
+                                    found_tag=true;
+                                    thisRS.entries[j].op1_mem_alias=sq.entries[k].tag;
+                                    thisRS.entries[j].op1_mem_alias_valid=TRUE;
+                                }
+                            }
+                        }
+
+                        //allocate lq for operand 1 if load alias/data not found
+                        if(found_data==false && found_tag==false){
+                            int alias = mempool.get();
+                            for(int i =0;i<max_lq_size;i++){
+                                if(lq.entries[i].entry_valid==FALSE){
+                                    lq.entries[i].entry_valid=TRUE;
+                                    lq.entries[i].address_valid=TRUE;
+                                    lq.entries[i].address=thisRS.entries[j].op1_combined_val;
+                                    lq.entries[i].old_bits=lq.occupancy;
+                                    lq.occupancy++;
+                                    lq.entries[i].valid=FALSE;
+                                    lq.entries[i].tag=alias;
+                                    break;
+                                }
+                            }
+                            thisRS.entries[j].op1_load_alias = alias;
+                            thisRS.entries[j].op1_load_alias_valid = TRUE;
+                        }
+
+                        //allocate sq for operand 1
+                        for(int i =0;i<max_sq_size;i++){
+                            if(sq.entries[i].entry_valid==FALSE){
+                                sq.entries[i].entry_valid=TRUE;
+                                sq.entries[i].address_valid=TRUE;
+                                sq.entries[i].address=thisRS.entries[j].op1_combined_val;
+                                sq.entries[i].old_bits=sq.occupancy;
+                                sq.occupancy++;
+                                sq.entries[i].valid=FALSE;
+                                sq.entries[i].tag=thisRS.entries[entry_index].store_tag;
+                                break;
+                            }
+                        }
+                    }
+                    //operand 2 search
+                    if(thisRS.entries[j].op2_addr_mode>direct){
+                        bool found_data=false;
+                        bool found_tag=false;
+                        int current_old_bits = max_sq_size;
+                        for(int k =0;k<max_sq_size;k++){
+                            if(sq.entries[k].entry_valid==TRUE && sq.entries[k].address==thisRS.entries[j].op2_combined_val &&
+                            sq.entries[k].old_bits<current_old_bits){
+                                current_old_bits=sq.entries[k].old_bits;
+                                if(sq.entries[k].valid==TRUE){
+                                    found_data=true;
+                                    for(int l=0;l<bytes_on_data_bus;l++){
+                                        thisRS.entries[j].op2_data=sq.entries[k].data[l];
+                                    }
+                                    thisRS.entries[j].op2_valid=TRUE;
+                                }else{
+                                    found_tag=true;
+                                    thisRS.entries[j].op2_mem_alias=sq.entries[k].tag;
+                                    thisRS.entries[j].op2_mem_alias_valid=TRUE;
+                                }
+                            }
+                        }
+
+                        //allocate lq for operand 2 if load alias/data not found
+                        //potential edge case to think about: what if operand 1 and 2 are the same address? we don't want to allocate
+                        //2 entries in the lq for the same thing
+                        if(found_data==false && found_tag==false){
+                            int alias = mempool.get();
+                            for(int i =0;i<max_lq_size;i++){
+                                if(lq.entries[i].entry_valid==FALSE){
+                                    lq.entries[i].entry_valid=TRUE;
+                                    lq.entries[i].address_valid=TRUE;
+                                    lq.entries[i].address=thisRS.entries[j].op2_combined_val;
+                                    lq.entries[i].old_bits=lq.occupancy;
+                                    lq.occupancy++;
+                                    lq.entries[i].valid=FALSE;
+                                    lq.entries[i].tag=alias;
+                                    break;
+                                }
+                            }
+                            thisRS.entries[j].op2_load_alias = alias;
+                            thisRS.entries[j].op2_load_alias_valid = TRUE;
+                        }
+                    }
+                }
+                if(evaluated_op1==false || evaluated_op2==false){
+                    search_age++;
+                    j=-1;
+                }
+            }
+            if(evaluated_op1==true || evaluated_op2==true){
+                break;
+            }
+        }
+    }
+
+    //want to determine what the operands will be
+    //operand 1 (destination)
+    if(pipeline.rr_op1_addr_mode==immediate){
+        thisRS.entries[entry_index].old_bits=thisRS.occupancy;
+        thisRS.occupancy++;
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op1_ready = TRUE;
+        thisRS.entries[entry_index].op1_combined_val=pipeline.rr_op1_base;
+    }else if(pipeline.rr_op1_addr_mode==reg){
+        thisRS.entries[entry_index].old_bits=thisRS.occupancy;
+        thisRS.occupancy++;
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
+        thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
+        thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
+    }else if(pipeline.rr_op1_addr_mode==direct){
+        thisRS.entries[entry_index].old_bits=thisRS.occupancy;
+        thisRS.occupancy++;
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        //check store queue
+        //this is the case where the address has already been computed
+        thisRS.entries[entry_index].op1_combined_val=pipeline.rr_op1_base;
+        thisRS.entries[entry_index].op1_ready=TRUE;
+        
+        //since in direct mode the address is fully computed, can immediately search the store queue
+        bool found_data=false;
+        bool found_tag=false;
+        int current_old_bits = max_sq_size;
+        for(int i =0;i<max_sq_size;i++){
+            if(sq.entries[i].entry_valid==TRUE && sq.entries[i].address==pipeline.rr_op1_base &&
+               sq.entries[i].old_bits<current_old_bits){
+                current_old_bits=sq.entries[i].old_bits;
+                if(sq.entries[i].valid==TRUE){
+                    found_data=true;
+                    for(int j=0;j<bytes_on_data_bus;j++){
+                        thisRS.entries[entry_index].op1_data=sq.entries[i].data[j];
+                    }
+                    thisRS.entries[entry_index].op1_valid=TRUE;
+                }else{
+                    found_tag=true;
+                    thisRS.entries[entry_index].op1_mem_alias=sq.entries[i].tag;
+                    thisRS.entries[entry_index].op1_mem_alias_valid=TRUE;
+                }
+            }
+        }
+        
+        //allocate entry in load queue if store queue search failed
+        //need address, and some form of alias to connect the data in load queue to the 
+        //operand in the RS entry
+        if(found_data==false && found_tag==false){
+            int alias = mempool.get();
+            for(int i =0;i<max_lq_size;i++){
+                if(lq.entries[i].entry_valid==FALSE){
+                    lq.entries[i].entry_valid=TRUE;
+                    lq.entries[i].address_valid=TRUE;
+                    lq.entries[i].address=pipeline.rr_op1_base;
+                    lq.entries[i].old_bits=lq.occupancy;
+                    lq.occupancy++;
+                    lq.entries[i].valid=FALSE;
+                    lq.entries[i].tag=alias;
+                    break;
+                }
+            }
+            thisRS.entries[entry_index].op1_load_alias = alias;
+            thisRS.entries[entry_index].op1_load_alias_valid = TRUE;
+        }
+
+        //allocate entry in store queue
+        //need address, and the store tag of the RS entry to receive the data
+        for(int i =0;i<max_sq_size;i++){
+            if(sq.entries[i].entry_valid==FALSE){
+                sq.entries[i].entry_valid=TRUE;
+                sq.entries[i].address_valid=TRUE;
+                sq.entries[i].address=pipeline.rr_op1_base;
+                sq.entries[i].old_bits=sq.occupancy;
+                sq.occupancy++;
+                sq.entries[i].valid=FALSE;
+                sq.entries[i].tag=thisRS.entries[entry_index].store_tag;
+                break;
+            }
+        }
+    }else if(pipeline.rr_op1_addr_mode==indirect || 
+             pipeline.rr_op1_addr_mode==based ||
+             pipeline.rr_op1_addr_mode==indexed || 
+             pipeline.rr_op1_addr_mode==based_indexed || 
+             pipeline.rr_op1_addr_mode==based_indexed_disp){
+        thisRS.entries[entry_index].old_bits=thisRS.occupancy;
+        thisRS.occupancy++;
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op1_mem_alias_valid=FALSE;
+        thisRS.entries[entry_index].op1_addr_mode=pipeline.rr_op1_addr_mode;
+        thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
+        thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
+        thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
+        thisRS.entries[entry_index].op1_index_valid = rat.valid[pipeline.rr_op1_index];
+        thisRS.entries[entry_index].op1_index_tag = rat.tag[pipeline.rr_op1_index];
+        thisRS.entries[entry_index].op1_index_val = rat.val[pipeline.rr_op1_index];
+        thisRS.entries[entry_index].op1_scale = pipeline.rr_op1_scale;
+        thisRS.entries[entry_index].op1_imm = pipeline.rr_op1_disp;
+        thisRS.entries[entry_index].op1_ready=FALSE;
+        thisRS.entries[entry_index].op1_load_alias_valid=FALSE;
+        thisRS.entries[entry_index].op1_valid=FALSE;
+    }
+    //operand 2 (source)
+    if(pipeline.rr_op2_addr_mode==immediate){
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op2_ready = TRUE;
+        thisRS.entries[entry_index].op2_combined_val=pipeline.rr_op2_base;
+    }else if(pipeline.rr_op2_addr_mode==reg){
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
+    }else if(pipeline.rr_op2_addr_mode==direct){
+        //check store queue
+        //if there's a match, propagate that alias to RS
+        //otherwise, allocate entry in load queue and propagate that alias to RS
+
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        //check store queue
+        //this is the case where the address has already been computed
+        thisRS.entries[entry_index].op2_combined_val=pipeline.rr_op2_base;
+        thisRS.entries[entry_index].op2_ready=TRUE;
+        
+        //since in direct mode the address is fully computed, can immediately search the store queue
+        bool found_data=false;
+        bool found_tag=false;
+        int current_old_bits = max_sq_size;
+        for(int i =0;i<max_sq_size;i++){
+            if(sq.entries[i].entry_valid==TRUE && sq.entries[i].address==pipeline.rr_op2_base &&
+               sq.entries[i].old_bits<current_old_bits){
+                current_old_bits=sq.entries[i].old_bits;
+                if(sq.entries[i].valid==TRUE){
+                    found_data=true;
+                    for(int j=0;j<bytes_on_data_bus;j++){
+                        thisRS.entries[entry_index].op2_data=sq.entries[i].data[j];
+                    }
+                    thisRS.entries[entry_index].op2_valid=TRUE;
+                }else{
+                    found_tag=true;
+                    thisRS.entries[entry_index].op2_mem_alias=sq.entries[i].tag;
+                    thisRS.entries[entry_index].op2_mem_alias_valid=TRUE;
+                }
+            }
+        }
+        
+        //allocate entry in load queue if store queue search failed
+        //need address, and some form of alias to connect the data in load queue to the 
+        //operand in the RS entry
+        if(found_data==false && found_tag==false){
+            int alias = mempool.get();
+            for(int i =0;i<max_lq_size;i++){
+                if(lq.entries[i].entry_valid==FALSE){
+                    lq.entries[i].entry_valid=TRUE;
+                    lq.entries[i].address_valid=TRUE;
+                    lq.entries[i].address=pipeline.rr_op1_base;
+                    lq.entries[i].old_bits=lq.occupancy;
+                    lq.occupancy++;
+                    lq.entries[i].valid=FALSE;
+                    lq.entries[i].tag=alias;
+                    break;
+                }
+            }
+            thisRS.entries[entry_index].op2_load_alias = alias;
+            thisRS.entries[entry_index].op2_load_alias_valid = TRUE;
+        }
+    }else if(pipeline.rr_op2_addr_mode==indirect || 
+             pipeline.rr_op2_addr_mode==based ||
+             pipeline.rr_op2_addr_mode==indexed || 
+             pipeline.rr_op2_addr_mode==based_indexed || 
+             pipeline.rr_op2_addr_mode==based_indexed_disp){
+        thisRS.entries[entry_index].old_bits=thisRS.occupancy;
+        thisRS.occupancy++;
+        thisRS.entries[entry_index].entry_valid=TRUE;
+        thisRS.entries[entry_index].updated_flags=pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op2_mem_alias_valid=FALSE;
+        thisRS.entries[entry_index].op2_addr_mode=pipeline.rr_op1_addr_mode;
+        thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_index_valid = rat.valid[pipeline.rr_op2_index];
+        thisRS.entries[entry_index].op2_index_tag = rat.tag[pipeline.rr_op2_index];
+        thisRS.entries[entry_index].op2_index_val = rat.val[pipeline.rr_op2_index];
+        thisRS.entries[entry_index].op2_scale = pipeline.rr_op2_scale;
+        thisRS.entries[entry_index].op2_imm = pipeline.rr_op2_disp;
+        thisRS.entries[entry_index].op2_ready=FALSE;
+        thisRS.entries[entry_index].op2_load_alias_valid=FALSE;
+        thisRS.entries[entry_index].op2_valid=FALSE;
     }
 }
 
 void addgen_branch_stage(){
-if(new_pipeline.agbr_valid && need_prediction){ //add control store bit for this
+if(pipeline.agbr_valid && pipeline.agbr_cs[control_instruction_type]){ //add control store bit for this
     bool prediction = branch_predictor->predict();
      tempEIP = EIP; //store this EIP in case need to resteer
-     tempOffset = new_pipeline.agen_offset;
+     tempOffset = pipeline.agbr_offset;
     if(prediction){
-        EIP = NEIP + new_pipeline.agen_offset; 
+        EIP = pipeline.agbr_NEIP + pipeline.agbr_offset; 
     }
     //something to let us know we are spec executing  
 }
 }
 
-void decode_stage(){
+#define operationRows 18
+#define operationCols 14
+#define addressingRows 26
+#define addressingCols 9
+#define operandRows 15
+#define operandCols 7
+int operationLUT[operationRows][operationCols] = 
+{12, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+5, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+80, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+81, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+83, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+2, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+3, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+12, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+13, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+80, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+81, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+83, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+8, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+9, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+10, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+11, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0
+};
+int addressingLUT[addressingRows][addressingCols] = 
+{
+4, 0, 0, 0, 1, 0, 0, 1, 1,
+5, 0, 0, 0, 1, 0, 0, 1, 1,
+12, 0, 0, 0, 1, 0, 0, 1, 1,
+13, 0, 0, 0, 1, 0, 0, 1, 1,
+80, 1, 3, 0, 1, 0, 0, 1, 1,
+80, 1, 0, 1, 0, 0, 0, 1, 1,
+81, 1, 3, 0, 1, 0, 0, 1, 1,
+81, 1, 0, 1, 0, 0, 0, 1, 1,
+83, 1, 3, 0, 1, 0, 0, 1, 1,
+83, 1, 0, 1, 0, 0, 0, 1, 1,
+0, 1, 3, 0, 1, 0, 1, 1, 1,
+0, 1, 0, 1, 0, 0, 1, 1, 1,
+1, 1, 3, 0, 1, 0, 1, 1, 1,
+1, 1, 0, 1, 0, 0, 1, 1, 1,
+8, 1, 3, 0, 1, 0, 1, 1, 1,
+8, 1, 0, 1, 0, 0, 1, 1, 1,
+9, 1, 3, 0, 1, 0, 1, 1, 1,
+9, 1, 0, 1, 0, 0, 1, 1, 1,
+2, 1, 3, 0, 1, 0, 1, 1, 1,
+2, 1, 0, 0, 1, 1, 0, 1, 1,
+3, 1, 3, 0, 1, 0, 1, 1, 1,
+3, 1, 0, 0, 1, 1, 0, 1, 1,
+10, 1, 3, 0, 1, 0, 1, 1, 1,
+10, 1, 0, 0, 1, 1, 0, 1, 1,
+11, 1, 3, 0, 1, 0, 1, 1, 1,
+11, 1, 0, 0, 1, 1, 0, 1, 1
+};
+int operandLUT[operandRows][operandCols] = 
+{4, 0, 0, 0, 0, 1, 1,
+5, 0, 0, 0, 0, 1, 1,
+12, 0, 0, 0, 0, 1, 1,
+13, 0, 0, 0, 0, 1, 1,
+80, 0, 1, 0, 0, 1, 1,
+81, 0, 1, 0, 0, 1, 1,
+83, 0, 1, 0, 1, 0, 0,
+0, 0, 1, 0, 0, 0, 1,
+1, 0, 1, 0, 0, 0, 1,
+8, 0, 1, 0, 0, 0, 1,
+9, 0, 1, 0, 0, 0, 1,
+2, 0, 0, 1, 0, 1, 0,
+3, 0, 0, 1, 0, 1, 0,
+10, 0, 0, 1, 0, 1, 0,
+11, 0, 0, 1, 0, 1, 0
+};
 
+void decode_stage(){
+    //use the pipeline latches to lookup in the LUTs
+    //search operationLUT
+    int mod = pipeline.decode_modrm>>6;
+    int reg = (pipeline.decode_modrm>>3)&0x7;
+    int rm = (pipeline.decode_modrm)&0x7;
+    int scale = pipeline.decode_sib>>6;
+    int index = (pipeline.decode_sib>>3)&0x7;
+    int base = (pipeline.decode_sib)&0x7;
+    for(int i =0;i<operationRows;i++){
+        if(pipeline.decode_opcode==operationLUT[i][0]){
+            if(operationLUT[i][1]==1){
+                if(reg == operationLUT[i][2]){
+                    //can latch operation, updated flags, and cntrl here
+                    new_pipeline.agbr_cs[operation] = operationLUT[i][3];
+                    new_pipeline.agbr_cs[updated_flags] = (operationLUT[i][4]<<7) +
+                                                      (operationLUT[i][5]<<6) +
+                                                      (operationLUT[i][6]<<5) +
+                                                      (operationLUT[i][7]<<4) +
+                                                      (operationLUT[i][8]<<3) +
+                                                      (operationLUT[i][9]<<2) +
+                                                      (operationLUT[i][10]<<1) +
+                                                      operationLUT[i][11];
+                    new_pipeline.agbr_cs[is_control_instruction] = operationLUT[i][12];
+                    new_pipeline.agbr_cs[control_instruction_type] = operationLUT[i][13];
+                    break;
+                }
+            }else{
+                new_pipeline.agbr_cs[operation] = operationLUT[i][3];
+                new_pipeline.agbr_cs[updated_flags] = (operationLUT[i][4]<<7) +
+                                                  (operationLUT[i][5]<<6) +
+                                                  (operationLUT[i][6]<<5) +
+                                                  (operationLUT[i][7]<<4) +
+                                                  (operationLUT[i][8]<<3) +
+                                                  (operationLUT[i][9]<<2) +
+                                                  (operationLUT[i][10]<<1) +
+                                                  operationLUT[i][11];
+                new_pipeline.agbr_cs[is_control_instruction] = operationLUT[i][12];
+                new_pipeline.agbr_cs[control_instruction_type] = operationLUT[i][13];
+                break;
+            }
+        }
+    }
+    //search addressingLUT
+    int locked=0;
+    for(int i =0;i<addressingRows;i++){
+        if(locked==1){
+            new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][3]<<1)+addressingLUT[i][4];
+            new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][5]<<1)+addressingLUT[i][6];
+            new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
+            new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
+            break;
+        }
+        if(pipeline.decode_opcode==addressingLUT[i][0]){
+            if(addressingLUT[i][1]==1){
+                if(mod == addressingLUT[i][2]){
+                    new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][3]<<1)+addressingLUT[i][4];
+                    new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][5]<<1)+addressingLUT[i][6];
+                    new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
+                    new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
+                    break;
+                }else{
+                    locked=1;
+                    continue;
+                }
+            }else{
+                new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][3]<<1)+addressingLUT[i][4];
+                new_pipeline.agbr_cs[op1_addr_mode]=(addressingLUT[i][5]<<1)+addressingLUT[i][6];
+                new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
+                new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
+            }
+        }
+    }
+    //search operandLUT
+    int op1base_selector, op2base_selector;
+    for(int i =0;i<operandRows;i++){
+        if(pipeline.decode_opcode==operandLUT[i][0]){
+            op1base_selector = (operandLUT[i][1]<<2)+(operandLUT[i][2]<<1)+operandLUT[i][3];
+            op2base_selector = (operandLUT[i][4]<<2)+(operandLUT[i][5]<<1)+operandLUT[i][6];
+        }
+    }
+
+    new_pipeline.agbr_NEIP = pipeline.decode_EIP+pipeline.decode_instruction_length;
+
+    //logic stuff
+    int disp;
+    int imm;
+    int sext_imm;
+    int disp_offset = 0;
+    if(pipeline.decode_1bdisp){
+        disp = pipeline.decode_dispimm[0]&0xFF;
+        disp_offset = 1;
+    }else if(pipeline.decode_4bdisp){
+        disp = ((pipeline.decode_dispimm[3]&0xFF)<<3)+((pipeline.decode_dispimm[2]&0xFF)<<2)
+        +((pipeline.decode_dispimm[1]&0xFF)<<1)+(pipeline.decode_dispimm[0]&0xFF);
+        disp_offset = 4;
+    }
+    if(pipeline.decode_1bimm){
+        imm = pipeline.decode_dispimm[disp_offset]&0xFF;
+    }else if(pipeline.decode_2bimm){
+        imm = ((pipeline.decode_dispimm[disp_offset+1]&0xFF)<<1)+(pipeline.decode_dispimm[disp_offset]&0xFF);
+    }else if(pipeline.decode_4bimm){
+        imm = ((pipeline.decode_dispimm[disp_offset+3]&0xFF)<<3)+((pipeline.decode_dispimm[disp_offset+2]&0xFF)<<2)+
+        ((pipeline.decode_dispimm[disp_offset+1]&0xFF)<<1)+(pipeline.decode_dispimm[disp_offset]&0xFF);
+    }
+    //do this later
+    sext_imm = imm;
+    //select operand bases here
+    if(op1base_selector == 0){
+        new_pipeline.agbr_op1_base = 0;
+    }else if(op1base_selector == 1){
+        new_pipeline.agbr_op1_base = reg;
+    }else if(op1base_selector == 2){
+        new_pipeline.agbr_op1_base = rm;
+    }else if(op1base_selector == 3){
+        new_pipeline.agbr_op1_base = imm;
+    }else if(op1base_selector == 4){
+        new_pipeline.agbr_op1_base = sext_imm;
+    }
+
+    if(op2base_selector == 0){
+        new_pipeline.agbr_op2_base = 0;
+    }else if(op2base_selector == 1){
+        new_pipeline.agbr_op2_base = reg;
+    }else if(op2base_selector == 2){
+        new_pipeline.agbr_op2_base = rm;
+    }else if(op2base_selector == 3){
+        new_pipeline.agbr_op2_base = imm;
+    }else if(op2base_selector == 4){
+        new_pipeline.agbr_op2_base = sext_imm;
+    }
+    //latch the rest of the operand data here
+    new_pipeline.agbr_op1_index=index;
+    new_pipeline.agbr_op1_scale=scale;
+    new_pipeline.agbr_op2_index=index;
+    new_pipeline.agbr_op2_scale=scale;
+    new_pipeline.agbr_op1_disp=disp;
+    new_pipeline.agbr_op2_disp=disp;
+    //latch offset and valid
+    new_pipeline.agbr_offset = pipeline.decode_offset;
+    new_pipeline.agbr_valid = pipeline.decode_valid;
 }
 
 #define max_instruction_length 15
@@ -1076,77 +1867,77 @@ void fetch_stage(){
 
     int bank_aligned=FALSE;
     int bank_offset=FALSE;
-    int* dataBits0[cache_line_size],dataBits1[cache_line_size], *tlb_hit, *tlb_physical_tag;
+    int* dataBits0[cache_line_size],*dataBits1[cache_line_size], *tlb_hit, *tlb_physical_tag;
     I$_TagStoreEntry* icache_tag_metadata;
     if(ibuffer_valid[(current_sector)]==FALSE){
-        icache_access(EIP,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0== *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0]== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[current_sector][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1== *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0]== *tlb_physical_tag)){
             ibuffer_valid[current_sector]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[current_sector][i]=dataBits1[i];
+                ibuffer[current_sector][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+1)%ibuffer_size]==FALSE){
-        icache_access(EIP+16,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+16,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+16,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+1)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+1)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+1)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+1)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+16, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+16, 0, 0);
         }
         bank_offset=TRUE;
     }
     if(ibuffer_valid[(current_sector+2)%ibuffer_size]==FALSE && bank_aligned==FALSE){
-        icache_access(EIP+32,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+32,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+32,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+2)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+2)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+2)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+2)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+32, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+32, 0, 0);
         }
         bank_aligned=TRUE;
     }
     if(ibuffer_valid[(current_sector+3)%ibuffer_size]==FALSE && bank_offset==FALSE){
-        icache_access(EIP+48,dataBits0,dataBits0,icache_tag_metadata);
+        icache_access(EIP+48,dataBits0,dataBits1,icache_tag_metadata);
         tlb_access(EIP+48,tlb_physical_tag,tlb_hit);
-        if((tlb_hit&&icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 == *tlb_physical_tag)){
+        if((tlb_hit&&icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
                 ibuffer[(current_sector+3)%ibuffer_size][i] = *dataBits0[i];
             }
-        }else if((tlb_hit&&icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 == *tlb_physical_tag)){
+        }else if((tlb_hit&&icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag)){
             ibuffer_valid[(current_sector+3)%ibuffer_size]=TRUE;
             for(int i =0;i<cache_line_size;i++){
-                ibuffer[(current_sector+3)%ibuffer_size][i]=dataBits1[i];
+                ibuffer[(current_sector+3)%ibuffer_size][i]=*dataBits1[i];
             }
-        }else if(tlb_hit || (((icache_tag_metadata->valid_way0) && (icache_tag_metadata->tag_way0 != *tlb_physical_tag)) && ((icache_tag_metadata->valid_way1) && (icache_tag_metadata->tag_way1 != *tlb_physical_tag)))){
-            mshr_preinserter(EIP+48, 0);
+        }else if(tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag)))){
+            mshr_preinserter(EIP+48, 0, 0);
         }
         bank_offset=TRUE;
     }
@@ -1155,11 +1946,23 @@ void fetch_stage(){
     oldEIP = EIP;
     EIP +=length;
     if(length>=(16-line_offset)){
-        ibuffer_valid[current_sector]=TRUE;
+        ibuffer_valid[current_sector]=FALSE;
     }
 }
 
 void mshr_inserter(){
+    //treat serializer as victim cache first for i/dcache
+    for(int i =0;i<pre_mshr_size;i++){
+        if(mshr.pre_entries[i].valid && (mshr.pre_entries[i].origin ==0 || mshr.pre_entries[i].origin ==1)){
+            //iterate through serializer
+            for(int j =0;j<num_serializer_entries;j++){
+                if(serializer.entries[j].valid && (serializer.entries[j].address==mshr.pre_entries[i].address)){
+                    serializer.entries[j].rescue_lock=1;
+                    serializer.entries[j].rescue_destination=mshr.pre_entries[i].origin;
+                }
+            }
+        }
+    }
     //insert icache requests
     for(int i = 0;i<pre_mshr_size;i++){
         if(mshr.pre_entries[i].valid && mshr.pre_entries[i].origin ==0){
@@ -1218,8 +2021,9 @@ void mshr_inserter(){
 void bus_arbiter(){
     //approach: probe metadata bus and do casework
     
-    if(metadata_bus.burst_counter==3){
+    if(metadata_bus.burst_counter==3 && metadata_bus.is_serializer_sending_data==TRUE){
         metadata_bus.is_serializer_sending_data=FALSE;
+        metadata_bus.burst_counter=0;
 
         serializer.entries[serializer_entry_to_send].valid=0;
         for(int i =0;i<num_serializer_entries;i++){
@@ -1277,6 +2081,7 @@ void bus_arbiter(){
         metadata_bus.is_mshr_sending_addr=TRUE;
         //destination stuff
         metadata_bus.origin = mshr.entries[mshr_entry_to_send].origin;
+        metadata_bus.to_mem_request_ID = mshr.entries[mshr_entry_to_send].request_ID;
 
         mshr.entries[mshr_entry_to_send].valid=FALSE;
         for(int i =0;i<mshr_size;i++){
@@ -1288,18 +2093,20 @@ void bus_arbiter(){
 
     //account for serializer subsequent bursts 
     if(metadata_bus.is_serializer_sending_data==TRUE){
-        metadata_bus.burst_counter++;
+        metadata_bus.burst_counter=metadata_bus.next_burst_counter;
 
-        data_bus.byte_wires[metadata_bus.burst_counter*4+0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
-        data_bus.byte_wires[metadata_bus.burst_counter*4+3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
+        data_bus.byte_wires[0]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+0];
+        data_bus.byte_wires[1]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+1];
+        data_bus.byte_wires[2]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+2];
+        data_bus.byte_wires[3]=serializer.entries[serializer_entry_to_send].data[metadata_bus.burst_counter*4+3];
     }
 }
 
 //architectural registers for the memory controller to keep whats happening happening
 int addresses_to_banks[banks_in_DRAM];
+int reqID_to_bank[banks_in_DRAM];
 int addr_to_bank_cycle[banks_in_DRAM];
+int entry_to_bank[banks_in_DRAM];
 
 #define cycles_to_access_bank 5
 
@@ -1316,8 +2123,21 @@ void memory_controller(){
         int bkbits = get_bank_bits(metadata_bus.mshr_address);
         addresses_to_banks[bkbits] = metadata_bus.mshr_address;
         addr_to_bank_cycle[bkbits] = 0;
-        metadata_bus.bank_status[bkbits] = 1;
+        reqID_to_bank[bkbits] = metadata_bus.to_mem_request_ID;
+        metadata_bus.bank_status[bkbits] = 3;
         metadata_bus.bank_destinations[bkbits]=metadata_bus.origin;
+    }
+
+    //check deserializer to start any stores if possible
+    if(metadata_bus.deserializer_can_store==TRUE &&
+       deserializer.entries[metadata_bus.deserializer_next_entry].receiving_data_from_data_bus==FALSE && 
+       deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM==FALSE){
+        int bkbits = get_bank_bits(deserializer.entries[metadata_bus.deserializer_next_entry].address);
+        deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM=TRUE;
+        metadata_bus.bank_status[bkbits]=2;
+        addr_to_bank_cycle[bkbits] = 0;
+        entry_to_bank[bkbits]=metadata_bus.deserializer_next_entry;
+        deserializer.entries[metadata_bus.deserializer_next_entry].old_bits=-1; // this causes a new next entry to be selected so a not busy bank can be stored into if need be
     }
 
     //iterate through the banks
@@ -1329,42 +2149,241 @@ void memory_controller(){
                 if((metadata_bus.is_serializer_sending_data==FALSE)&&(metadata_bus.serializer_available==TRUE)&&(metadata_bus.receive_enable==FALSE)){
                     metadata_bus.receive_enable=TRUE;
                     metadata_bus.burst_counter=0;
+                    metadata_bus.next_burst_counter=0;
                     metadata_bus.store_address=addresses_to_banks[i];
+                    metadata_bus.to_cpu_request_ID=reqID_to_bank[i];
                     metadata_bus.destination = metadata_bus.bank_destinations[i];
-                    
+
+                    data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[0];
+                    data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[1];
+                    data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[2];
+                    data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[3];
+
                     addr_to_bank_cycle[i]++;
                 }else{
                     continue;//wait until you can send stuff back
                 }
             }//continue load send to cpu
             else if(addr_to_bank_cycle[i]>cycles_to_access_bank){
-                
+                metadata_bus.burst_counter=metadata_bus.next_burst_counter;
+
+                data_bus.byte_wires[0]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+0];
+                data_bus.byte_wires[1]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+1];
+                data_bus.byte_wires[2]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+2];
+                data_bus.byte_wires[3]=dram.banks[get_bank_bits(addresses_to_banks[i])].rows[get_row_bits(addresses_to_banks[i])].columns[get_column_bits(addresses_to_banks[i])].bytes[metadata_bus.burst_counter*4+3];
+                if(metadata_bus.burst_counter==3){
+                    //end it
+                    metadata_bus.bank_status[i]=0;
+                    metadata_bus.burst_counter=0;
+                    metadata_bus.receive_enable=FALSE;
+                    continue;
+                }
             }else{
                 addr_to_bank_cycle[i]++;
             }
+        }else if(metadata_bus.bank_status[i]==2){//handle in progress store requests, assume it takes 5 cycles to open the row and then just paste the data in it
+            if(addr_to_bank_cycle[i]==cycles_to_access_bank){
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[0]=deserializer.entries[entry_to_bank[i]].data[0];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[1]=deserializer.entries[entry_to_bank[i]].data[1];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[2]=deserializer.entries[entry_to_bank[i]].data[2];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)].bytes[3]=deserializer.entries[entry_to_bank[i]].data[3];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[0]=deserializer.entries[entry_to_bank[i]].data[4];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[1]=deserializer.entries[entry_to_bank[i]].data[5];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[2]=deserializer.entries[entry_to_bank[i]].data[6];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+1].bytes[3]=deserializer.entries[entry_to_bank[i]].data[7];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[0]=deserializer.entries[entry_to_bank[i]].data[8];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[1]=deserializer.entries[entry_to_bank[i]].data[9];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[2]=deserializer.entries[entry_to_bank[i]].data[10];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+2].bytes[3]=deserializer.entries[entry_to_bank[i]].data[11];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[0]=deserializer.entries[entry_to_bank[i]].data[12];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[1]=deserializer.entries[entry_to_bank[i]].data[13];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[2]=deserializer.entries[entry_to_bank[i]].data[14];
+                dram.banks[i].rows[get_row_bits(deserializer.entries[entry_to_bank[i]].address)].columns[get_column_bits(deserializer.entries[entry_to_bank[i]].address)+3].bytes[3]=deserializer.entries[entry_to_bank[i]].data[15];
+
+                metadata_bus.bank_status[i]=0;
+                deserializer.entries[entry_to_bank[i]].valid=FALSE;
+            }else{
+                addr_to_bank_cycle[i]++;
+            }
+        }else if(metadata_bus.bank_status[i]==3){
+            //attempt revival by searching through deserializer for an address match
+            //if revival succeeds, modify deserializer entry such that it'll send the data through the data bus
+            //if revival fails, change status to 1
+            bool revival_success = false;
+            for(int j=0;j<num_deserializer_entries;j++){
+                if(deserializer.entries[j].valid ==TRUE && (deserializer.entries[j].address==addresses_to_banks[i])){
+                    deserializer.entries[j].revival_destination=metadata_bus.bank_destinations[i];
+                    deserializer.entries[j].revival_lock=1;
+                    deserializer.entries[j].revival_reqID=reqID_to_bank[i];
+                    metadata_bus.bank_status[i]=0;
+                    revival_success=true;
+                    break;
+                }
+            }
+            if(revival_success==false){
+                metadata_bus.bank_status[i]=1;
+            }
+        }
+    }
+
+    //stage revivals here, only one revival can be staged in a singular cycle and they take 4 cycles to burst
+    for(int i =0;i<num_deserializer_entries;i++){
+        if((metadata_bus.revival_in_progress==FALSE) && 
+           (deserializer.entries[i].revival_lock==TRUE) && 
+           (metadata_bus.is_serializer_sending_data==FALSE) && 
+           (metadata_bus.serializer_available==TRUE) && 
+           (metadata_bus.receive_enable==FALSE)){
+            metadata_bus.revival_in_progress=TRUE;
+            metadata_bus.receive_enable=TRUE;
+            metadata_bus.current_revival_entry=i;
+            metadata_bus.burst_counter=0;
+            metadata_bus.destination=deserializer.entries[metadata_bus.current_revival_entry].revival_destination;
+            metadata_bus.to_cpu_request_ID=deserializer.entries[metadata_bus.current_revival_entry].revival_reqID;
+
+            metadata_bus.store_address=deserializer.entries[metadata_bus.current_revival_entry].address;
+            data_bus.byte_wires[0]=deserializer.entries[metadata_bus.current_revival_entry].data[0];
+            data_bus.byte_wires[1]=deserializer.entries[metadata_bus.current_revival_entry].data[1];
+            data_bus.byte_wires[2]=deserializer.entries[metadata_bus.current_revival_entry].data[2];
+            data_bus.byte_wires[3]=deserializer.entries[metadata_bus.current_revival_entry].data[3];
+            
+            return;
+        }else if(metadata_bus.revival_in_progress==TRUE){
+            
+
+            metadata_bus.burst_counter=metadata_bus.next_burst_counter;
+
+            data_bus.byte_wires[0]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+0];
+            data_bus.byte_wires[1]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+1];
+            data_bus.byte_wires[2]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+2];
+            data_bus.byte_wires[3]=deserializer.entries[metadata_bus.current_revival_entry].data[metadata_bus.burst_counter*4+3];
+
+            if(metadata_bus.burst_counter==3){
+                metadata_bus.burst_counter=0;
+                metadata_bus.receive_enable=FALSE;
+                metadata_bus.revival_in_progress=FALSE;
+                deserializer.entries[metadata_bus.current_revival_entry].revival_lock=0;
+                continue;
+            }
+
         }
     }
 }
 
-//needs to be called every cycle
-//track occupancy and tell caches if theyre allowed to evict or not by updating architectural register
-void serializer_handler(){
-
-}
-
 //called upon eviction from cache/tlb
-void serializer_inserter(){
+void serializer_inserter(int address, int data[cache_line_size]){
+    for(int i =0;i<num_serializer_entries;i++){
+        if(serializer.entries[i].valid==FALSE){
+            serializer.entries[i].valid=TRUE;
+            serializer.entries[i].address=address;
+            for(int j =0;j<cache_line_size;j++){
+                serializer.entries[i].data[j]=data[j];
+            }
+            serializer.entries[i].old_bits=serializer.occupancy;
+            break;
+        }else{
+            continue;
+        }
+    }
 
+    serializer.occupancy++;
+
+    if(serializer.occupancy <max_serializer_occupancy){
+        metadata_bus.serializer_available=1;
+    }else{
+        metadata_bus.serializer_available=0;
+    }
 }
 
 //called when the serializer is sending data
 void deserializer_inserter(){
     if(metadata_bus.burst_counter==0){
-
+        deserializer.entries[metadata_bus.deserializer_target].address=metadata_bus.serializer_address;
+        deserializer.entries[metadata_bus.deserializer_target].receiving_data_from_data_bus=TRUE;
+    }
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+0]=data_bus.byte_wires[0];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+1]=data_bus.byte_wires[1];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+2]=data_bus.byte_wires[2];
+    deserializer.entries[metadata_bus.deserializer_target].data[metadata_bus.burst_counter*4+3]=data_bus.byte_wires[3];
+    metadata_bus.next_burst_counter=metadata_bus.burst_counter++;
+    if(metadata_bus.burst_counter==3){
+        deserializer.entries[metadata_bus.deserializer_target].old_bits=deserializer.occupancy;
+        deserializer.occupancy++;
+        deserializer.entries[metadata_bus.deserializer_target].valid=1;
+        deserializer.entries[metadata_bus.deserializer_target].receiving_data_from_data_bus=FALSE;
     }
 }
 
 //needs to be called every cycle, will set availability of deserializer on metadata bus
 void deserializer_handler(){
     //iterate through deserializers and find the first available one, use that as the target
+    //also indicate which banks the deserializer wants to store into
+    //also indicate which deserializer entry will store next
+    bool found_deserializer_target=false;
+    int temp_deserializer_bank_targets[banks_in_DRAM];
+    for(int i =0;i<banks_in_DRAM;i++){
+        temp_deserializer_bank_targets[i]=0;
+    }
+    for(int i =0;i<max_deserializer_occupancy;i++){
+        if(deserializer.entries[i].valid==FALSE && deserializer.entries[i].revival_lock==FALSE){
+            //target selection
+            metadata_bus.deserializer_target=i;
+            metadata_bus.deserializer_full=0;
+            found_deserializer_target=true;
+            //which banks are targetted for stores
+            temp_deserializer_bank_targets[get_bank_bits(deserializer.entries[i].address)]=1;
+        }
+    }
+    int search_age=0;
+    for(int i =0;i<max_deserializer_occupancy;i++){
+        if(deserializer.entries[i].valid==TRUE){
+            //next deserializer entry that gets to store
+            if(deserializer.entries[i].old_bits==search_age){
+                if(metadata_bus.bank_status[get_bank_bits(deserializer.entries[i].address)]==0){
+                    metadata_bus.deserializer_next_entry=i;
+                    metadata_bus.deserializer_can_store=1;
+                    break;
+                }else if(search_age==num_deserializer_entries){
+                    metadata_bus.deserializer_can_store=0;
+                    break;
+                }else{
+                    search_age++;
+                    i=-1;
+                }
+            }
+        }
+    }
+    for(int i =0;i<banks_in_DRAM;i++){
+        metadata_bus.deserializer_bank_targets[i]=temp_deserializer_bank_targets[i];
+    }
+    if(!found_deserializer_target){
+        metadata_bus.deserializer_full=1;
+    }
+}
+
+void rescue_stager(){
+    //if the destination is available for a write, stage the rescue
+    //for this, a burst isn't needed
+    //assume only one rescue allowed per cycle for now?
+    bool success= false;
+    for(int i =0;i<num_serializer_entries;i++){
+        if(serializer.entries[i].rescue_lock==TRUE){
+            if(serializer.entries[i].rescue_destination==0){
+                if(icache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
+                    icache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
+                    success = icache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    if(success)
+                        serializer.entries[i].rescue_lock==FALSE;
+                    return;
+                }
+            }else if(serializer.entries[i].rescue_destination==1){
+                if(dcache.bank_status[get_bank_bits(serializer.entries[i].address)]==0){
+                    dcache.bank_status[get_bank_bits(serializer.entries[i].address)]=1;
+                    success = dcache_paste(serializer.entries[i].address, serializer.entries[i].data);//for now we'll assume that this is fast
+                    if(success)
+                        serializer.entries[i].rescue_lock==FALSE;
+                    return;
+                }
+            }
+        }
+    }
 }
