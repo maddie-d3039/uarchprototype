@@ -322,6 +322,7 @@ typedef struct PipeState_Entry_Struct{
       rr_valid, rr_operation, rr_updated_flags, 
       rr_op1_base, rr_op1_index, rr_op1_scale, rr_op1_disp, rr_op1_addr_mode,
       rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode;
+    bool decode_prefix, decode_8disp, decode_4disp, decode_8imm, decode_16imm, decode_32imm, decode_SIB, 
 
     char decode_instruction_register[15];
     char agbr_instruction_register[15];
