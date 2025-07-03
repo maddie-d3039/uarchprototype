@@ -421,16 +421,15 @@ void cycle()
     if (metadata_bus.receive_enable && metadata_bus.destination == 0)
     {
         icache_write_from_databus();
-    }
-    if (metadata_bus.receive_enable && metadata_bus.destination == 1)
+    }else if (metadata_bus.receive_enable && metadata_bus.destination == 1)
     {
         dcache_write_from_databus();
-    }
-    if (metadata_bus.receive_enable && metadata_bus.destination == 2)
+    }else if (metadata_bus.receive_enable && metadata_bus.destination == 2)
     {
         tlb_write();
     }
     pipeline = new_pipeline;
+    cache_printer();
     cycle_count++;
 }
 
@@ -809,7 +808,8 @@ D$ dcache;
 
 typedef struct I$_TagStoreEntry_Struct
 {
-    int valid[icache_ways], tag[icache_ways], dirty[icache_ways], lru;
+    int valid[icache_ways], tag[icache_ways], dirty[icache_ways];
+    int lru;
 } I$_TagStoreEntry;
 typedef struct I$_TagStore_Struct
 {
@@ -1092,15 +1092,27 @@ void icache_write_from_databus()
         icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter * 4 + 2] = data_bus.byte_wires[2];
         icache.data.icache_datastore[bkbits][idxbits][icache.tag.icache_tagstore[bkbits][idxbits].lru][metadata_bus.burst_counter * 4 + 3] = data_bus.byte_wires[3];
         
-        printf("%d\n",metadata_bus.burst_counter);
-        printf("%d\n",icache.tag.icache_tagstore[bkbits][idxbits].lru);
+        //printf("%d\n",metadata_bus.burst_counter);
+        //printf("%d\n",icache.tag.icache_tagstore[bkbits][idxbits].lru);
+        //printf("valid addr: %x\ndirty addr: %x\ntag addr: %x\nlru addr: %x\n", 
+        //        &icache.tag.icache_tagstore[bkbits][idxbits].valid[0],
+        //        &icache.tag.icache_tagstore[bkbits][idxbits].dirty[0],
+        //        &icache.tag.icache_tagstore[bkbits][idxbits].tag[0],
+        //        &icache.tag.icache_tagstore[bkbits][idxbits].lru);
         if(metadata_bus.burst_counter==3){
-            printf("check %d %d %d", bkbits, idxbits, icache.tag.icache_tagstore[bkbits][idxbits].lru);
-            icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]=1;
-            printf("%d\n",icache.tag.icache_tagstore[bkbits][idxbits].valid[icache.tag.icache_tagstore[bkbits][idxbits].lru]);
-            icache.tag.icache_tagstore[bkbits][idxbits].dirty[icache.tag.icache_tagstore[bkbits][idxbits].lru]=0;
-            icache.tag.icache_tagstore[bkbits][idxbits].tag[icache.tag.icache_tagstore[bkbits][idxbits].lru]=metadata_bus.store_address>>8;
+            //printf("check %d %d %d\n", bkbits, idxbits, icache.tag.icache_tagstore[bkbits][idxbits].lru);
+            int way = icache.tag.icache_tagstore[bkbits][idxbits].lru;
             icache.tag.icache_tagstore[bkbits][idxbits].lru=!(icache.tag.icache_tagstore[bkbits][idxbits].lru);
+            icache.tag.icache_tagstore[bkbits][idxbits].valid[way]=1;
+            //printf("%d\n",icache.tag.icache_tagstore[bkbits][idxbits].valid[way]);
+            icache.tag.icache_tagstore[bkbits][idxbits].dirty[way]=0;
+            //printf("%d\n",icache.tag.icache_tagstore[bkbits][idxbits].valid[way]);
+            icache.tag.icache_tagstore[bkbits][idxbits].tag[way]=metadata_bus.store_address>>8;
+            //printf("val %d\n",icache.tag.icache_tagstore[bkbits][idxbits].valid[way]);
+            //printf("tag %x\n",icache.tag.icache_tagstore[bkbits][idxbits].tag[way]);
+            //printf("dir %d\n",icache.tag.icache_tagstore[bkbits][idxbits].dirty[way]);
+            //printf("lru %d\n",icache.tag.icache_tagstore[bkbits][idxbits].lru);
+            cache_printer();
         }
 
         metadata_bus.next_burst_counter++;
@@ -2501,7 +2513,8 @@ void cache_printer(){
     for(int i= 0;i<icache_banks;i++){
         for(int j =0;j<icache_sets;j++){
             for(int k=0;k<icache_ways;k++){
-                printf("Valid: %d | Tag: 0x%x, | LRU: %d | Dirty: %d\n", icache.tag.icache_tagstore[i][j].valid[icache_ways], icache.tag.icache_tagstore[i][j].tag[icache_ways], icache.tag.icache_tagstore[i][j].lru, icache.tag.icache_tagstore[i][j].dirty[icache_ways]);
+                printf("Bank %d Set %d Way %d\n",i,j,k);
+                printf("Valid: %d | Tag: 0x%x | LRU: %d | Dirty: %d\n", icache.tag.icache_tagstore[i][j].valid[k], icache.tag.icache_tagstore[i][j].tag[k], icache.tag.icache_tagstore[i][j].lru, icache.tag.icache_tagstore[i][j].dirty[k]);
                 printf("Data: 0x");
                 for(int l =0;l<cache_line_size;l++){
                     printf("%x:",icache.data.icache_datastore[i][j][k][l]);
