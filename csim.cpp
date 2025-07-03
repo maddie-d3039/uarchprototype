@@ -479,12 +479,13 @@ void mdump(FILE *dumpsim_file, int start, int stop)
 
     printf("\nMemory content [0x%04x..0x%04x] :\n", start, stop);
     printf("-------------------------------------\n");
-    for (address = (start); address <= (stop); address+=2){
-        int i = (address & 0x30)>>4;
-        int j = (address & 0x7F00)>>8;
-        int k = (((address & 0xC)>>2) + ((address & 0xC0)>>4));
+    for (address = (start); address <= (stop); address += 2)
+    {
+        int i = (address & 0x30) >> 4;
+        int j = (address & 0x7F00) >> 8;
+        int k = (((address & 0xC) >> 2) + ((address & 0xC0) >> 4));
         int l = (address & 0x3);
-        printf("  0x%04x (%d) : 0x%02x%02x\n", address, address, dram.banks[i].rows[j].columns[k].bytes[l+1], dram.banks[i].rows[j].columns[k].bytes[l]);
+        printf("  0x%04x (%d) : 0x%02x%02x\n", address, address, dram.banks[i].rows[j].columns[k].bytes[l + 1], dram.banks[i].rows[j].columns[k].bytes[l]);
     }
     printf("\n");
 
@@ -528,17 +529,17 @@ void idump(FILE *dumpsim_file)
 
     printf("\nCurrent architectural state :\n");
     printf("-------------------------------------\n");
-    printf("Cycle Count     : %d\n", cycle_count);
-    printf("PC              : 0x%04x\n", EIP);
+    printf("Cycle Count : %d\n", cycle_count);
+    printf("PC          : 0x%04x\n", EIP);
     // printf("Flags: %d\n", EFLAGS);// Need to fix this, currently dont have flags printing
     printf("Registers:\n");
     // printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP); //Need to fix this, currently dont have registers printing
     printf("\n");
 
     printf("------------- PREDECODE   Latches --------------\n");
-    printf("PD V          :  0x%04x\n", pipeline.predecode_valid);
+    printf("PD V        :  0x%04x\n", pipeline.predecode_valid);
     printf("\n");
-    printf("PD EIP        :  %d\n", pipeline.predecode_EIP);
+    printf("PD EIP      :  %d\n", pipeline.predecode_EIP);
     printf("\n");
 
     printf("------------- DECODE Latches --------------\n");
@@ -552,47 +553,51 @@ void idump(FILE *dumpsim_file)
     printf("------------- AGEN_BR  Latches --------------\n");
     printf("AGBR V         :  0x%04x\n", pipeline.agbr_valid);
     printf("\n");
-    printf("AGBR NEIP  :  0x%04x\n", pipeline.agbr_NEIP);
-    printf("AGBR OP1 B     :  0x%04x\n", pipeline.agbr_op1_base);
-    printf("AGBR OP1 I          :  %d\n", pipeline.agbr_op1_index);
-    printf("AGBR OP1 S          :  0x%04x\n", pipeline.agbr_op1_scale);
-    printf("AGBR OP1 D        :  %d\n", pipeline.agbr_op1_disp);
-    printf("AGBR OP2 B     :  0x%04x\n", pipeline.agbr_op2_base);
-    printf("AGBR OP2 I          :  %d\n", pipeline.agbr_op2_index);
-    printf("AGBR OP2 S          :  0x%04x\n", pipeline.agbr_op2_scale);
-    printf("AGBR OP2 D        :  %d\n", pipeline.agbr_op2_disp);
-    printf("AGBR_CS          :  ");
+    printf("AGBR NEIP   :  0x%04x\n", pipeline.agbr_NEIP);
+    printf("AGBR OP1 B  :  0x%04x\n", pipeline.agbr_op1_base);
+    printf("AGBR OP1 I  :  %d\n", pipeline.agbr_op1_index);
+    printf("AGBR OP1 S  :  0x%04x\n", pipeline.agbr_op1_scale);
+    printf("AGBR OP1 D  :  %d\n", pipeline.agbr_op1_disp);
+    printf("AGBR OP2 B  :  0x%04x\n", pipeline.agbr_op2_base);
+    printf("AGBR OP2 I  :  %d\n", pipeline.agbr_op2_index);
+    printf("AGBR OP2 S  :  0x%04x\n", pipeline.agbr_op2_scale);
+    printf("AGBR OP2 D  :  %d\n", pipeline.agbr_op2_disp);
+    printf("AGBR_CS     :  ");
     for (k = 0; k < num_control_store_bits; k++)
     {
         printf("%d", pipeline.agbr_cs[k]);
     }
 
-    printf("------------- REG RENAME   Latches --------------\n");
-    printf("RR V          :  0x%04x\n", pipeline.rr_valid);
+    printf("\n\n------------- REG RENAME   Latches --------------\n");
+    printf("RR V        :  0x%04x\n", pipeline.rr_valid);
     printf("\n");
-    printf("RR OP         :  0x%04x\n", pipeline.rr_operation);
-    printf("RR UF   :  0x%04x\n", pipeline.rr_updated_flags);
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_base);
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_index);
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_scale);
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_disp);
-    printf("RR OP1 B      :  0x%04x\n", pipeline.rr_op1_addr_mode);
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_base);
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_index);
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_scale);
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_disp);
-    printf("RR OP2 B      :  0x%04x\n", pipeline.rr_op2_addr_mode);
+    printf("RR OP       :  0x%04x\n", pipeline.rr_operation);
+    printf("RR UF       :  0x%04x\n", pipeline.rr_updated_flags);
+    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_base);
+    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_index);
+    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_scale);
+    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_disp);
+    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_addr_mode);
+    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_base);
+    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_index);
+    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_scale);
+    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_disp);
+    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_addr_mode);
 
     printf("\n");
 }
 
 void init_memory()
 {
-    for (int i = 0; i < banks_in_DRAM; i++){
-        for(int j = 0;j< rows_per_bank;j++){
-            for(int k=0;k<columns_per_row;k++){
-                for(int l = 0;l<bytes_per_column;l++){
-                    dram.banks[i].rows[j].columns[k].bytes[l]=0;
+    for (int i = 0; i < banks_in_DRAM; i++)
+    {
+        for (int j = 0; j < rows_per_bank; j++)
+        {
+            for (int k = 0; k < columns_per_row; k++)
+            {
+                for (int l = 0; l < bytes_per_column; l++)
+                {
+                    dram.banks[i].rows[j].columns[k].bytes[l] = 0;
                 }
             }
         }
@@ -707,16 +712,16 @@ void load_program(char *program_filename)
         }
         /* Write the word to memory array. */
         int address = program_base + ii;
-        //printf("address %d\n",address);
-        int i = (address & 0x30)>>4;
-        int j = (address & 0x7F00)>>8;
-        int k = (((address & 0xC)>>2) + ((address & 0xC0)>>4));
+        // printf("address %d\n",address);
+        int i = (address & 0x30) >> 4;
+        int j = (address & 0x7F00) >> 8;
+        int k = (((address & 0xC) >> 2) + ((address & 0xC0) >> 4));
         int l = (address & 0x3);
         dram.banks[i].rows[j].columns[k].bytes[l] = word & 0x00FF;
-        //printf("%x\n",word & 0x00FF);
-        dram.banks[i].rows[j].columns[k].bytes[l+1] = (word >> 8) & 0x00FF;
-        //printf("%x\n",(word >> 8) & 0x00FF);
-        ii+=2;
+        // printf("%x\n",word & 0x00FF);
+        dram.banks[i].rows[j].columns[k].bytes[l + 1] = (word >> 8) & 0x00FF;
+        // printf("%x\n",(word >> 8) & 0x00FF);
+        ii += 2;
     }
 
     if (EIP == 0)
@@ -998,13 +1003,15 @@ void mshr_preinserter(int address, int origin, int request_ID)
     // origin 0 is icache
     // origin 1 is dcache
     // origin 2 is tlb
-    //search for duplicates and merge
-    for(int i =0;i<pre_mshr_size;i++){
-        if((mshr.pre_entries[i].valid == TRUE) && (mshr.pre_entries[i].address == address)){
+    // search for duplicates and merge
+    for (int i = 0; i < pre_mshr_size; i++)
+    {
+        if ((mshr.pre_entries[i].valid == TRUE) && (mshr.pre_entries[i].address == address))
+        {
             return;
         }
     }
-    //insert
+    // insert
     for (int i = 0; i < pre_mshr_size; i++)
     {
         if (mshr.pre_entries[i].valid == FALSE)
@@ -1053,7 +1060,7 @@ void tlb_access(int addr, int *physical_tag, int *tlb_hit)
     int incoming_vpn = (addr >> 12) & 0x7;
     for (int i = 0; i < tlb_entries; i++)
     {
-        if (tlb.entries[i].valid==TRUE && tlb.entries[i].present==TRUE)
+        if (tlb.entries[i].valid == TRUE && tlb.entries[i].present == TRUE)
         {
             if (incoming_vpn == tlb.entries[i].vpn)
             {
@@ -1063,7 +1070,7 @@ void tlb_access(int addr, int *physical_tag, int *tlb_hit)
             }
         }
     }
-    *tlb_hit  = 0;
+    *tlb_hit = 0;
     translate_miss(incoming_vpn);
     return;
 }
@@ -2109,7 +2116,7 @@ void predecode_stage()
         { // check prefix
             len++;
             prefix = instruction[instIndex];
-            instIndex ++;
+            instIndex++;
             opcode = instruction[instIndex];
             instIndex++;
             new_pipeline.decode_is_prefix = 1;
@@ -2134,14 +2141,15 @@ void predecode_stage()
                 new_pipeline.decode_sib = instruction[instIndex];
                 instIndex++;
             }
-            else{
+            else
+            {
                 new_pipeline.decode_is_sib = false;
             }
             int displacement = mod_rm & 0b11000000;
             if (displacement == 1)
             {
                 len++;
-                 new_pipeline.decode_1bdisp = true;
+                new_pipeline.decode_1bdisp = true;
             }
             if (displacement == 2)
             {
@@ -2172,7 +2180,8 @@ void predecode_stage()
             new_pipeline.decode_1bimm = true;
         }
         int j = 0;
-        for(int i = instIndex; i < 15; i++){ //copy over all displacement and immediate 
+        for (int i = instIndex; i < 15; i++)
+        { // copy over all displacement and immediate
             new_pipeline.decode_dispimm[j] = instruction[instIndex];
             j++;
         }
@@ -2241,9 +2250,9 @@ void fetch_stage()
 
     int bank_aligned = FALSE;
     int bank_offset = FALSE;
-    int b,c,d;
-    int *dataBits0[cache_line_size], *dataBits1[cache_line_size], *tlb_hit=&c, *tlb_physical_tag=&d;
-    I$_TagStoreEntry *icache_tag_metadata=nullptr;
+    int b, c, d;
+    int *dataBits0[cache_line_size], *dataBits1[cache_line_size], *tlb_hit = &c, *tlb_physical_tag = &d;
+    I$_TagStoreEntry *icache_tag_metadata = nullptr;
     if (ibuffer_valid[(current_sector)] == FALSE)
     {
         icache_access(EIP, dataBits0, dataBits1, &icache_tag_metadata);
@@ -2387,16 +2396,18 @@ void mshr_inserter()
     for (int i = 0; i < pre_mshr_size; i++)
     {
         if (mshr.pre_entries[i].valid && mshr.pre_entries[i].origin == 0)
-        {   
+        {
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if(mshr.entries[j].valid ==TRUE && mshr.entries[j].address == mshr.pre_entries[j].address){
+                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                {
                     skip = true;
                     break;
                 }
             }
-            if(skip==false){
+            if (skip == false)
+            {
                 for (int j = 0; j < mshr_size; j++)
                 {
                     if (mshr.occupancy < mshr_size)
@@ -2409,7 +2420,7 @@ void mshr_inserter()
                             mshr.entries[j].origin = mshr.pre_entries[i].origin;
                             mshr.entries[j].address = mshr.pre_entries[i].address;
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
-                            mshr.pre_entries[i].valid=FALSE;
+                            mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
                             break;
                         }
@@ -2422,16 +2433,18 @@ void mshr_inserter()
     for (int i = 0; i < pre_mshr_size; i++)
     {
         if (mshr.pre_entries[i].valid && mshr.pre_entries[i].origin == 1)
-        {   
+        {
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if(mshr.entries[j].valid ==TRUE && mshr.entries[j].address == mshr.pre_entries[j].address){
+                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                {
                     skip = true;
                     break;
                 }
             }
-            if(skip==false){
+            if (skip == false)
+            {
                 for (int j = 0; j < mshr_size; j++)
                 {
                     if (mshr.occupancy < mshr_size)
@@ -2444,7 +2457,7 @@ void mshr_inserter()
                             mshr.entries[j].origin = mshr.pre_entries[i].origin;
                             mshr.entries[j].address = mshr.pre_entries[i].address;
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
-                            mshr.pre_entries[i].valid=FALSE;
+                            mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
                             break;
                         }
@@ -2461,12 +2474,14 @@ void mshr_inserter()
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if(mshr.entries[j].valid ==TRUE && mshr.entries[j].address == mshr.pre_entries[j].address){
+                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                {
                     skip = true;
                     break;
                 }
             }
-            if(skip==false){
+            if (skip == false)
+            {
                 for (int j = 0; j < mshr_size; j++)
                 {
                     if (mshr.occupancy < mshr_size)
@@ -2479,7 +2494,7 @@ void mshr_inserter()
                             mshr.entries[j].origin = mshr.pre_entries[i].origin;
                             mshr.entries[j].address = mshr.pre_entries[i].address;
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
-                            mshr.pre_entries[i].valid=FALSE;
+                            mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
                             break;
                         }
@@ -2490,25 +2505,37 @@ void mshr_inserter()
     }
 }
 
-void mshr_printer(){
-    for(int i =0 ;i<mshr_size;i++){
+void mshr_printer()
+{
+    for (int i = 0; i < mshr_size; i++)
+    {
         printf("MSHR Pre-entry %d\n", i);
         printf("Valid: %d | Address: 0x%x | Age: %d | Origin: %d | ReqID: %d\n", mshr.pre_entries[i].valid, mshr.pre_entries[i].address, mshr.pre_entries[i].old_bits, mshr.pre_entries[i].origin, mshr.pre_entries[i].request_ID);
     }
-    for(int i =0 ;i<mshr_size;i++){
+    printf("\n\n\n");
+    for (int i = 0; i < mshr_size; i++)
+    {
         printf("MSHR Entry %d\n", i);
         printf("Valid: %d | Address: 0x%x | Age: %d | Origin: %d | ReqID: %d\n", mshr.entries[i].valid, mshr.entries[i].address, mshr.entries[i].old_bits, mshr.entries[i].origin, mshr.entries[i].request_ID);
     }
-    for(int i =0 ;i<max_serializer_occupancy;i++){
+    printf("\n\n\n");
+
+    for (int i = 0; i < max_serializer_occupancy; i++)
+    {
         printf("Serializer Entry%d\n", i);
         printf("Valid: %d | Address: 0x%x | Age: %d | Sending Data?: %d\n", serializer.entries[i].valid, serializer.entries[i].address, serializer.entries[i].old_bits, serializer.entries[i].sending_data);
-    }for(int i =0 ;i<max_deserializer_occupancy;i++){
+    }
+    printf("\n\n\n");
+    for (int i = 0; i < max_deserializer_occupancy; i++)
+    {
         printf("Deserializer Entry%d\n", i);
         printf("Valid: %d | Address: 0x%x | Age: %d\n", deserializer.entries[i].valid, deserializer.entries[i].address, deserializer.entries[i].old_bits);
     }
+    printf("\n\n\n");
 }
 
-void cache_printer(){
+void cache_printer()
+{
     printf("ICACHE\n");
     for(int i= 0;i<icache_banks;i++){
         for(int j =0;j<icache_sets;j++){
@@ -2516,8 +2543,9 @@ void cache_printer(){
                 printf("Bank %d Set %d Way %d\n",i,j,k);
                 printf("Valid: %d | Tag: 0x%x | LRU: %d | Dirty: %d\n", icache.tag.icache_tagstore[i][j].valid[k], icache.tag.icache_tagstore[i][j].tag[k], icache.tag.icache_tagstore[i][j].lru, icache.tag.icache_tagstore[i][j].dirty[k]);
                 printf("Data: 0x");
-                for(int l =0;l<cache_line_size;l++){
-                    printf("%x:",icache.data.icache_datastore[i][j][k][l]);
+                for (int l = 0; l < cache_line_size; l++)
+                {
+                    printf("%x:", icache.data.icache_datastore[i][j][k][l]);
                 }
                 printf("\n");
             }
@@ -2525,7 +2553,6 @@ void cache_printer(){
         }
     }
 }
-
 
 void bus_arbiter()
 {
@@ -2634,12 +2661,14 @@ int addr_to_bank_cycle[banks_in_DRAM];
 int entry_to_bank[banks_in_DRAM];
 #define cycles_to_access_bank 5
 
-void bus_printer(){
+void bus_printer()
+{
     printf("BUS PRINTER\n");
     printf("DATA BUS\n");
     printf("Data: 0x");
-    for(int i =3;i>=0;i--){
-        printf("%x",data_bus.byte_wires[i]);
+    for (int i = 3; i >= 0; i--)
+    {
+        printf("%x", data_bus.byte_wires[i]);
     }
     printf("\n");
     printf("META BUS\n");
@@ -2711,8 +2740,7 @@ void memory_controller()
     // check deserializer to start any stores if possible
     if (metadata_bus.deserializer_can_store == TRUE &&
         deserializer.entries[metadata_bus.deserializer_next_entry].receiving_data_from_data_bus == FALSE &&
-        deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM == FALSE
-    && deserializer.entries[metadata_bus.deserializer_next_entry].valid == TRUE)
+        deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM == FALSE && deserializer.entries[metadata_bus.deserializer_next_entry].valid == TRUE)
     {
         int bkbits = get_bank_bits(deserializer.entries[metadata_bus.deserializer_next_entry].address);
         deserializer.entries[metadata_bus.deserializer_next_entry].writing_data_to_DRAM = TRUE;
