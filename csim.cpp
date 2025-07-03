@@ -399,6 +399,18 @@ PipeState_Entry pipeline, new_pipeline;
 BP *branch_predictor = new BP();
 int cycle_count;
 
+// tlb
+typedef struct TLBEntry_Struct
+{
+    int valid, present, permissions, vpn, pfn;
+} TLBEntry;
+typedef struct TLB_Struct
+{
+    TLBEntry entries[tlb_entries];
+} TLB;
+
+TLB tlb;
+
 int RUN_BIT;
 
 void cycle()
@@ -429,7 +441,7 @@ void cycle()
         tlb_write();
     }
     pipeline = new_pipeline;
-    cache_printer();
+    //cache_printer();
     cycle_count++;
 }
 
@@ -745,6 +757,12 @@ void initialize(char *program_filename, int num_prog_files)
 
     oldEIP = 0;
 
+    tlb.entries[0].valid=1;
+    tlb.entries[0].pfn=0;
+    tlb.entries[0].vpn=0;
+    tlb.entries[0].permissions=0;
+    tlb.entries[0].present=1;
+
     RUN_BIT = TRUE;
 }
 
@@ -842,17 +860,7 @@ int get_icache_idx_bits(int address)
     return (address >> 5) & 0x7;
 }
 
-// tlb
-typedef struct TLBEntry_Struct
-{
-    int valid, present, permissions, vpn, pfn;
-} TLBEntry;
-typedef struct TLB_Struct
-{
-    TLBEntry entries[tlb_entries];
-} TLB;
 
-TLB tlb;
 
 // load queue
 #define max_lq_size 16
@@ -1119,7 +1127,7 @@ void icache_write_from_databus()
             //printf("tag %x\n",icache.tag.icache_tagstore[bkbits][idxbits].tag[way]);
             //printf("dir %d\n",icache.tag.icache_tagstore[bkbits][idxbits].dirty[way]);
             //printf("lru %d\n",icache.tag.icache_tagstore[bkbits][idxbits].lru);
-            cache_printer();
+            //cache_printer();
         }
 
         metadata_bus.next_burst_counter++;
@@ -2257,9 +2265,13 @@ void fetch_stage()
     {
         icache_access(EIP, dataBits0, dataBits1, &icache_tag_metadata);
         tlb_access(EIP, tlb_physical_tag, tlb_hit);
-        bool hi = (*tlb_hit && icache_tag_metadata->valid[0]);
-        bool hi1 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
-        if ((tlb_hit && icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag))
+        bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
+        bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
+        bool condition3 = (*tlb_hit && icache_tag_metadata->valid[1]);
+        bool condition4 = (icache_tag_metadata->tag[1] == *tlb_physical_tag);
+        printf("tlb hit %d, i$ hit %d\n", condition1, condition2);
+        printf("stuff %d %d %d %d\n", *tlb_hit, icache_tag_metadata->valid[0], icache_tag_metadata->tag[0], *tlb_physical_tag);
+        if ((condition1) && (condition2))
         {
             ibuffer_valid[current_sector] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2267,7 +2279,7 @@ void fetch_stage()
                 ibuffer[current_sector][i] = *dataBits0[i];
             }
         }
-        else if ((tlb_hit && icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag))
+        else if ((condition3) && (condition4))
         {
             ibuffer_valid[current_sector] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2275,7 +2287,7 @@ void fetch_stage()
                 ibuffer[current_sector][i] = *dataBits1[i];
             }
         }
-        else if (tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag))))
+        else
         {
             printf("preinserter1\n");
             mshr_preinserter(EIP, 0, 0);
