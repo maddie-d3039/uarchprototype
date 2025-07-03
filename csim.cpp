@@ -2298,7 +2298,11 @@ void fetch_stage()
     {
         icache_access(EIP + 16, dataBits0, dataBits1, &icache_tag_metadata);
         tlb_access(EIP + 16, tlb_physical_tag, tlb_hit);
-        if ((tlb_hit && icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag))
+        bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
+        bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
+        bool condition3 = (*tlb_hit && icache_tag_metadata->valid[1]);
+        bool condition4 = (icache_tag_metadata->tag[1] == *tlb_physical_tag);
+        if ((condition1) && (condition2))
         {
             ibuffer_valid[(current_sector + 1) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2306,7 +2310,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 1) % ibuffer_size][i] = *dataBits0[i];
             }
         }
-        else if ((tlb_hit && icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag))
+        else if ((condition3) && (condition4))
         {
             ibuffer_valid[(current_sector + 1) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2314,7 +2318,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 1) % ibuffer_size][i] = *dataBits1[i];
             }
         }
-        else if (tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag))))
+        else
         {
             printf("preinserter2\n");
             mshr_preinserter(EIP + 16, 0, 0);
@@ -2325,7 +2329,11 @@ void fetch_stage()
     {
         icache_access(EIP + 32, dataBits0, dataBits1, &icache_tag_metadata);
         tlb_access(EIP + 32, tlb_physical_tag, tlb_hit);
-        if ((tlb_hit && icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag))
+        bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
+        bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
+        bool condition3 = (*tlb_hit && icache_tag_metadata->valid[1]);
+        bool condition4 = (icache_tag_metadata->tag[1] == *tlb_physical_tag);
+        if ((condition1) && (condition2))
         {
             ibuffer_valid[(current_sector + 2) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2333,7 +2341,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 2) % ibuffer_size][i] = *dataBits0[i];
             }
         }
-        else if ((tlb_hit && icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag))
+        else if ((condition3) && (condition4))
         {
             ibuffer_valid[(current_sector + 2) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2341,7 +2349,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 2) % ibuffer_size][i] = *dataBits1[i];
             }
         }
-        else if (tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag))))
+        else
         {
             printf("preinserter3\n");
             mshr_preinserter(EIP + 32, 0, 0);
@@ -2352,7 +2360,11 @@ void fetch_stage()
     {
         icache_access(EIP + 48, dataBits0, dataBits1, &icache_tag_metadata);
         tlb_access(EIP + 48, tlb_physical_tag, tlb_hit);
-        if ((tlb_hit && icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] == *tlb_physical_tag))
+        bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
+        bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
+        bool condition3 = (*tlb_hit && icache_tag_metadata->valid[1]);
+        bool condition4 = (icache_tag_metadata->tag[1] == *tlb_physical_tag);
+        if ((condition1) && (condition2))
         {
             ibuffer_valid[(current_sector + 3) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2360,7 +2372,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 3) % ibuffer_size][i] = *dataBits0[i];
             }
         }
-        else if ((tlb_hit && icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] == *tlb_physical_tag))
+        else if ((condition3) && (condition4))
         {
             ibuffer_valid[(current_sector + 3) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
@@ -2368,7 +2380,7 @@ void fetch_stage()
                 ibuffer[(current_sector + 3) % ibuffer_size][i] = *dataBits1[i];
             }
         }
-        else if (tlb_hit || (((icache_tag_metadata->valid[0]) && (icache_tag_metadata->tag[0] != *tlb_physical_tag)) && ((icache_tag_metadata->valid[1]) && (icache_tag_metadata->tag[1] != *tlb_physical_tag))))
+        else
         {
             printf("preinserter4\n");
             mshr_preinserter(EIP + 48, 0, 0);
@@ -2407,14 +2419,16 @@ void mshr_inserter()
     // insert icache requests
     for (int i = 0; i < pre_mshr_size; i++)
     {
-        if (mshr.pre_entries[i].valid && mshr.pre_entries[i].origin == 0)
+        if ((mshr.pre_entries[i].valid==TRUE) && (mshr.pre_entries[i].origin == 0))
         {
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                if ((mshr.entries[j].valid == TRUE) && (mshr.entries[j].address == mshr.pre_entries[i].address))
                 {
                     skip = true;
+                    mshr.pre_entries[i].valid=FALSE;
+                    printf("skip\n");
                     break;
                 }
             }
@@ -2426,6 +2440,7 @@ void mshr_inserter()
                     {
                         if (mshr.entries[j].valid == FALSE)
                         {
+                            printf("setting i:%d j:%d\n", i,j);
                             mshr.entries[j].valid = TRUE;
                             mshr.entries[j].old_bits = mshr.occupancy;
                             mshr.occupancy++;
@@ -2434,10 +2449,13 @@ void mshr_inserter()
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
                             mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
-                            break;
+                            //printf("val %d", mshr.entries[j].valid);
+                            return;
                         }
                     }
                 }
+            }else{
+                printf("skipping\n");
             }
         }
     }
@@ -2449,7 +2467,7 @@ void mshr_inserter()
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                if ((mshr.entries[j].valid == TRUE) && (mshr.entries[j].address == mshr.pre_entries[i].address))
                 {
                     skip = true;
                     break;
@@ -2471,7 +2489,7 @@ void mshr_inserter()
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
                             mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
-                            break;
+                            return;
                         }
                     }
                 }
@@ -2486,7 +2504,7 @@ void mshr_inserter()
             bool skip = false;
             for (int j = 0; j < mshr_size; j++)
             {
-                if (mshr.entries[j].valid == TRUE && mshr.entries[j].address == mshr.pre_entries[j].address)
+                if ((mshr.entries[j].valid) == TRUE && (mshr.entries[j].address == mshr.pre_entries[j].address))
                 {
                     skip = true;
                     break;
@@ -2508,7 +2526,7 @@ void mshr_inserter()
                             mshr.entries[j].request_ID = mshr.pre_entries[i].request_ID;
                             mshr.pre_entries[i].valid = FALSE;
                             mshr.pre_occupancy--;
-                            break;
+                            return;
                         }
                     }
                 }
@@ -2519,7 +2537,7 @@ void mshr_inserter()
 
 void mshr_printer()
 {
-    for (int i = 0; i < mshr_size; i++)
+    for (int i = 0; i < pre_mshr_size; i++)
     {
         printf("MSHR Pre-entry %d\n", i);
         printf("Valid: %d | Address: 0x%x | Age: %d | Origin: %d | ReqID: %d\n", mshr.pre_entries[i].valid, mshr.pre_entries[i].address, mshr.pre_entries[i].old_bits, mshr.pre_entries[i].origin, mshr.pre_entries[i].request_ID);
