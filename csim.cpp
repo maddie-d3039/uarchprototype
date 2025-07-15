@@ -39,6 +39,7 @@ void dcache_write_from_databus();
 void tlb_write();
 void mshr_printer();
 void bus_printer();
+void station_printer();
 void cache_printer();
 
 #define control_store_rows 20 // arbitrary
@@ -577,7 +578,7 @@ void idump(FILE *dumpsim_file)
     printf("AGBR_CS     :  ");
     for (k = 0; k < num_control_store_bits; k++)
     {
-        printf("%d", pipeline.agbr_cs[k]);
+        printf("%d\n", pipeline.agbr_cs[k]);
     }
 
     printf("\n\n------------- REG RENAME   Latches --------------\n");
@@ -586,15 +587,15 @@ void idump(FILE *dumpsim_file)
     printf("RR OP       :  0x%04x\n", pipeline.rr_operation);
     printf("RR UF       :  0x%04x\n", pipeline.rr_updated_flags);
     printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_base);
-    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_index);
-    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_scale);
-    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_disp);
-    printf("RR OP1 B    :  0x%04x\n", pipeline.rr_op1_addr_mode);
+    printf("RR OP1 I    :  0x%04x\n", pipeline.rr_op1_index);
+    printf("RR OP1 S    :  0x%04x\n", pipeline.rr_op1_scale);
+    printf("RR OP1 D    :  0x%04x\n", pipeline.rr_op1_disp);
+    printf("RR OP1 MODE    :  0x%04x\n", pipeline.rr_op1_addr_mode);
     printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_base);
-    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_index);
-    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_scale);
-    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_disp);
-    printf("RR OP2 B    :  0x%04x\n", pipeline.rr_op2_addr_mode);
+    printf("RR OP2 I    :  0x%04x\n", pipeline.rr_op2_index);
+    printf("RR OP2 S    :  0x%04x\n", pipeline.rr_op2_scale);
+    printf("RR OP2 D    :  0x%04x\n", pipeline.rr_op2_disp);
+    printf("RR OP2 MODE    :  0x%04x\n", pipeline.rr_op2_addr_mode);
 
     printf("\n");
 }
@@ -666,6 +667,11 @@ void get_command(FILE *dumpsim_file)
     case 'b':
     case 'B':
         bus_printer();
+        break;
+
+    case 's':
+    case 'S':
+        station_printer();
         break;
 
     case 'R':
@@ -756,6 +762,10 @@ void initialize(char *program_filename, int num_prog_files)
     init_state();
 
     oldEIP = 0;
+
+    for(i=0;i<GPR_Count;i++){
+        rat.valid[i]=1;
+    }
 
     tlb.entries[0].valid=1;
     tlb.entries[0].pfn=0;
@@ -1041,12 +1051,17 @@ void translate_miss(int vpn)
     mshr_preinserter(phys_addr, 2, 2);
 }
 
-void icache_access(int addr, int *data_way0[cache_line_size], int *data_way1[cache_line_size], I$_TagStoreEntry **tag_metadata)
+int data_way0[cache_line_size], data_way1[cache_line_size];
+void icache_access(int addr, I$_TagStoreEntry **tag_metadata)
 {
     int bank = (addr >> 3) & 0x1;
     int set = (addr >> 4) & 0x7;
-    *data_way0 = icache.data.icache_datastore[bank][set][0];
-    *data_way1 = icache.data.icache_datastore[bank][set][1];
+    for(int i =0;i<cache_line_size;i++){
+        data_way0[i] = icache.data.icache_datastore[bank][set][0][i];
+    }
+    for(int i =0;i<cache_line_size;i++){
+        data_way1[i] = icache.data.icache_datastore[bank][set][1][i];
+    }
     *tag_metadata = &icache.tag.icache_tagstore[bank][set];
     return;
 }
@@ -1244,6 +1259,14 @@ void memory_stage()
 
 void execute_stage()
 {
+    for(int i =0;i<num_stations;i++){
+        for(int j=0;j<num_entries_per_RS;j++){
+            if(stations[i].entries[j].entry_valid && stations[i].entries[j].op1_ready && stations[i].entries[j].op2_ready){
+                printf("i want to execute\n");
+                break;
+            }
+        }
+    }
 }
 
 enum addressing_modes
@@ -1343,6 +1366,7 @@ void register_rename_stage()
                     // operand 1
                     if (thisRS.entries[j].op1_addr_mode == reg || thisRS.entries[j].op1_addr_mode == indirect)
                     {
+                        printf("hi %d\n", thisRS.entries[j].op1_base_valid);
                         if (thisRS.entries[j].op1_base_valid == TRUE && thisRS.entries[j].op1_ready == FALSE)
                         {
                             thisRS.entries[j].op1_ready = TRUE;
@@ -1572,10 +1596,14 @@ void register_rename_stage()
 
     // want to determine what the operands will be
     // operand 1 (destination)
+    printf("%d\n",pipeline.rr_op1_addr_mode);
+    printf("%d\n",pipeline.rr_op2_addr_mode);
+    printf("\n");
     if (pipeline.rr_op1_addr_mode == immediate)
     {
         thisRS.entries[entry_index].old_bits = thisRS.occupancy;
         thisRS.occupancy++;
+        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
         thisRS.entries[entry_index].entry_valid = TRUE;
         thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
         thisRS.entries[entry_index].op1_ready = TRUE;
@@ -1586,6 +1614,7 @@ void register_rename_stage()
         thisRS.entries[entry_index].old_bits = thisRS.occupancy;
         thisRS.occupancy++;
         thisRS.entries[entry_index].entry_valid = TRUE;
+        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
         thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
         thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
         thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
@@ -1596,6 +1625,7 @@ void register_rename_stage()
         thisRS.entries[entry_index].old_bits = thisRS.occupancy;
         thisRS.occupancy++;
         thisRS.entries[entry_index].entry_valid = TRUE;
+        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
         thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
         // check store queue
         // this is the case where the address has already been computed
@@ -1700,6 +1730,7 @@ void register_rename_stage()
     {
         thisRS.entries[entry_index].entry_valid = TRUE;
         thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
         thisRS.entries[entry_index].op2_ready = TRUE;
         thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
     }
@@ -1708,6 +1739,7 @@ void register_rename_stage()
         thisRS.entries[entry_index].entry_valid = TRUE;
         thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
         thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
+        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
         thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
         thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
     }
@@ -1722,6 +1754,7 @@ void register_rename_stage()
         // check store queue
         // this is the case where the address has already been computed
         thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
+        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
         thisRS.entries[entry_index].op2_ready = TRUE;
 
         // since in direct mode the address is fully computed, can immediately search the store queue
@@ -1800,6 +1833,7 @@ void register_rename_stage()
         thisRS.entries[entry_index].op2_load_alias_valid = FALSE;
         thisRS.entries[entry_index].op2_valid = FALSE;
     }
+    stations[pipeline.rr_operation] = thisRS;
 }
 
 void addgen_branch_stage()
@@ -1815,6 +1849,19 @@ void addgen_branch_stage()
         }
         // something to let us know we are spec executing
     }
+    new_pipeline.rr_valid = pipeline.agbr_valid;
+    new_pipeline.rr_operation = pipeline.agbr_cs[operation];
+    new_pipeline.rr_updated_flags = pipeline.agbr_cs[updated_flags];
+    new_pipeline.rr_op1_base = pipeline.agbr_op1_base;
+    new_pipeline.rr_op1_index = pipeline.agbr_op1_index;
+    new_pipeline.rr_op1_scale = pipeline.agbr_op1_scale;
+    new_pipeline.rr_op1_disp = pipeline.agbr_op1_disp;
+    new_pipeline.rr_op1_addr_mode= pipeline.agbr_cs[op1_addr_mode];
+    new_pipeline.rr_op2_base = pipeline.agbr_op2_base;
+    new_pipeline.rr_op2_index = pipeline.agbr_op2_index;
+    new_pipeline.rr_op2_scale = pipeline.agbr_op2_scale;
+    new_pipeline.rr_op2_disp = pipeline.agbr_op2_disp;
+    new_pipeline.rr_op2_addr_mode= pipeline.agbr_cs[op2_addr_mode];
 }
 
 #define operationRows 18
@@ -1826,18 +1873,18 @@ void addgen_branch_stage()
 int operationLUT[operationRows][operationCols] =
     {12, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      5, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     80, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     81, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     83, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+     128, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+     129, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
+     131, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      2, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      3, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
      12, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
      13, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     80, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     81, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     83, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+     128, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+     129, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
+     131, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
      8, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
      9, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
      10, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
@@ -1848,12 +1895,12 @@ int addressingLUT[addressingRows][addressingCols] =
         5, 0, 0, 0, 1, 0, 0, 1, 1,
         12, 0, 0, 0, 1, 0, 0, 1, 1,
         13, 0, 0, 0, 1, 0, 0, 1, 1,
-        80, 1, 3, 0, 1, 0, 0, 1, 1,
-        80, 1, 0, 1, 0, 0, 0, 1, 1,
-        81, 1, 3, 0, 1, 0, 0, 1, 1,
-        81, 1, 0, 1, 0, 0, 0, 1, 1,
-        83, 1, 3, 0, 1, 0, 0, 1, 1,
-        83, 1, 0, 1, 0, 0, 0, 1, 1,
+        128, 1, 3, 0, 1, 0, 0, 1, 1, // note: 128 = x80
+        128, 1, 0, 1, 0, 0, 0, 1, 1,
+        129, 1, 3, 0, 1, 0, 0, 1, 1,
+        129, 1, 0, 1, 0, 0, 0, 1, 1,
+        131, 1, 3, 0, 1, 0, 0, 1, 1,
+        131, 1, 0, 1, 0, 0, 0, 1, 1,
         0, 1, 3, 0, 1, 0, 1, 1, 1,
         0, 1, 0, 1, 0, 0, 1, 1, 1,
         1, 1, 3, 0, 1, 0, 1, 1, 1,
@@ -1875,9 +1922,9 @@ int operandLUT[operandRows][operandCols] =
      5, 0, 0, 0, 0, 1, 1,
      12, 0, 0, 0, 0, 1, 1,
      13, 0, 0, 0, 0, 1, 1,
-     80, 0, 1, 0, 0, 1, 1,
-     81, 0, 1, 0, 0, 1, 1,
-     83, 0, 1, 0, 1, 0, 0,
+     128, 0, 1, 0, 0, 1, 1,
+     129, 0, 1, 0, 0, 1, 1,
+     131, 0, 1, 0, 1, 0, 0,
      0, 0, 1, 0, 0, 0, 1,
      1, 0, 1, 0, 0, 0, 1,
      8, 0, 1, 0, 0, 0, 1,
@@ -1978,8 +2025,10 @@ void decode_stage()
     }
     // search operandLUT
     int op1base_selector, op2base_selector;
+    printf("hello %d\n",pipeline.decode_opcode);
     for (int i = 0; i < operandRows; i++)
     {
+        printf("%d\n",operandLUT[i][0]);
         if (pipeline.decode_opcode == operandLUT[i][0])
         {
             op1base_selector = (operandLUT[i][1] << 2) + (operandLUT[i][2] << 1) + operandLUT[i][3];
@@ -2019,6 +2068,7 @@ void decode_stage()
     }
     // do this later
     sext_imm = imm;
+    printf("op1: %d op2: %d\n",op1base_selector,op2base_selector);
     // select operand bases here
     if (op1base_selector == 0)
     {
@@ -2122,7 +2172,7 @@ void predecode_stage()
         int instIndex = 0;
         if (instruction[instIndex] == 0x66 || instruction[instIndex] == 0x67)
         { // check prefix
-            len++;
+            len+=2;
             prefix = instruction[instIndex];
             instIndex++;
             opcode = instruction[instIndex];
@@ -2203,6 +2253,8 @@ void predecode_stage()
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
         length = len;
+    }else{
+        new_pipeline.decode_valid=0;
     }
 }
 
@@ -2263,20 +2315,23 @@ void fetch_stage()
     I$_TagStoreEntry *icache_tag_metadata = nullptr;
     if (ibuffer_valid[(current_sector)] == FALSE)
     {
-        icache_access(EIP, dataBits0, dataBits1, &icache_tag_metadata);
+        icache_access(EIP, &icache_tag_metadata);
         tlb_access(EIP, tlb_physical_tag, tlb_hit);
         bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
         bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
         bool condition3 = (*tlb_hit && icache_tag_metadata->valid[1]);
         bool condition4 = (icache_tag_metadata->tag[1] == *tlb_physical_tag);
-        printf("tlb hit %d, i$ hit %d\n", condition1, condition2);
-        printf("stuff %d %d %d %d\n", *tlb_hit, icache_tag_metadata->valid[0], icache_tag_metadata->tag[0], *tlb_physical_tag);
+        //printf("tlb hit %d, i$ hit %d\n", condition1, condition2);
+        //printf("stuff %d %d %d %d\n", *tlb_hit, icache_tag_metadata->valid[0], icache_tag_metadata->tag[0], *tlb_physical_tag);
         if ((condition1) && (condition2))
         {
             ibuffer_valid[current_sector] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
-            {
-                ibuffer[current_sector][i] = *dataBits0[i];
+            {   
+                //printf("hi %d\n", i);
+                //printf("%d \n", data_way0[i]);
+                //printf("%d \n", ibuffer[current_sector][i]);
+                ibuffer[current_sector][i] = data_way0[i];
             }
         }
         else if ((condition3) && (condition4))
@@ -2284,19 +2339,20 @@ void fetch_stage()
             ibuffer_valid[current_sector] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[current_sector][i] = *dataBits1[i];
+                //printf("hi %d\n", i);
+                ibuffer[current_sector][i] = data_way1[i];
             }
         }
         else
         {
-            printf("preinserter1\n");
+            //printf("preinserter1\n");
             mshr_preinserter(EIP, 0, 0);
         }
         bank_aligned = TRUE;
     }
     if (ibuffer_valid[(current_sector + 1) % ibuffer_size] == FALSE)
     {
-        icache_access(EIP + 16, dataBits0, dataBits1, &icache_tag_metadata);
+        icache_access(EIP + 16, &icache_tag_metadata);
         tlb_access(EIP + 16, tlb_physical_tag, tlb_hit);
         bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
         bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
@@ -2307,7 +2363,7 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 1) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 1) % ibuffer_size][i] = *dataBits0[i];
+                ibuffer[(current_sector + 1) % ibuffer_size][i] = data_way0[i];
             }
         }
         else if ((condition3) && (condition4))
@@ -2315,19 +2371,19 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 1) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 1) % ibuffer_size][i] = *dataBits1[i];
+                ibuffer[(current_sector + 1) % ibuffer_size][i] = data_way1[i];
             }
         }
         else
         {
-            printf("preinserter2\n");
+            //printf("preinserter2\n");
             mshr_preinserter(EIP + 16, 0, 0);
         }
         bank_offset = TRUE;
     }
     if (ibuffer_valid[(current_sector + 2) % ibuffer_size] == FALSE && bank_aligned == FALSE)
     {
-        icache_access(EIP + 32, dataBits0, dataBits1, &icache_tag_metadata);
+        icache_access(EIP + 32, &icache_tag_metadata);
         tlb_access(EIP + 32, tlb_physical_tag, tlb_hit);
         bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
         bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
@@ -2338,7 +2394,7 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 2) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 2) % ibuffer_size][i] = *dataBits0[i];
+                ibuffer[(current_sector + 2) % ibuffer_size][i] = data_way0[i];
             }
         }
         else if ((condition3) && (condition4))
@@ -2346,19 +2402,19 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 2) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 2) % ibuffer_size][i] = *dataBits1[i];
+                ibuffer[(current_sector + 2) % ibuffer_size][i] = data_way1[i];
             }
         }
         else
         {
-            printf("preinserter3\n");
+            //printf("preinserter3\n");
             mshr_preinserter(EIP + 32, 0, 0);
         }
         bank_aligned = TRUE;
     }
     if (ibuffer_valid[(current_sector + 3) % ibuffer_size] == FALSE && bank_offset == FALSE)
     {
-        icache_access(EIP + 48, dataBits0, dataBits1, &icache_tag_metadata);
+        icache_access(EIP + 48, &icache_tag_metadata);
         tlb_access(EIP + 48, tlb_physical_tag, tlb_hit);
         bool condition1 = (*tlb_hit && icache_tag_metadata->valid[0]);
         bool condition2 = (icache_tag_metadata->tag[0] == *tlb_physical_tag);
@@ -2369,7 +2425,7 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 3) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 3) % ibuffer_size][i] = *dataBits0[i];
+                ibuffer[(current_sector + 3) % ibuffer_size][i] = data_way0[i];
             }
         }
         else if ((condition3) && (condition4))
@@ -2377,12 +2433,12 @@ void fetch_stage()
             ibuffer_valid[(current_sector + 3) % ibuffer_size] = TRUE;
             for (int i = 0; i < cache_line_size; i++)
             {
-                ibuffer[(current_sector + 3) % ibuffer_size][i] = *dataBits1[i];
+                ibuffer[(current_sector + 3) % ibuffer_size][i] = data_way1[i];
             }
         }
         else
         {
-            printf("preinserter4\n");
+            //printf("preinserter4\n");
             mshr_preinserter(EIP + 48, 0, 0);
         }
         bank_offset = TRUE;
@@ -2400,7 +2456,7 @@ void fetch_stage()
 void mshr_inserter()
 {
     // treat serializer as victim cache first for i/dcache
-    printf("inserter\n");
+    //printf("inserter\n");
     for (int i = 0; i < pre_mshr_size; i++)
     {
         if (mshr.pre_entries[i].valid && (mshr.pre_entries[i].origin == 0 || mshr.pre_entries[i].origin == 1))
@@ -2428,7 +2484,7 @@ void mshr_inserter()
                 {
                     skip = true;
                     mshr.pre_entries[i].valid=FALSE;
-                    printf("skip\n");
+                    //printf("skip\n");
                     break;
                 }
             }
@@ -2440,7 +2496,7 @@ void mshr_inserter()
                     {
                         if (mshr.entries[j].valid == FALSE)
                         {
-                            printf("setting i:%d j:%d\n", i,j);
+                            //printf("setting i:%d j:%d\n", i,j);
                             mshr.entries[j].valid = TRUE;
                             mshr.entries[j].old_bits = mshr.occupancy;
                             mshr.occupancy++;
@@ -2455,7 +2511,7 @@ void mshr_inserter()
                     }
                 }
             }else{
-                printf("skipping\n");
+                //printf("skipping\n");
             }
         }
     }
@@ -2581,6 +2637,21 @@ void cache_printer()
             }
             printf("\n");
         }
+    }
+}
+
+void station_printer(){
+    printf("RESERVATION STATIONS\n");
+    for(int i =0;i<num_stations;i++){
+        printf("Station %d\n", i);
+        for(int j=0;j<num_entries_per_RS;j++){
+            printf("%d %d %d %d %d", stations[i].entries[j].entry_valid, stations[i].entries[j].op1_ready, stations[i].entries[j].op2_ready
+                              , stations[i].entries[j].op1_base_val, stations[i].entries[j].op2_base_val                                     );
+            if(j!=num_entries_per_RS-1){
+                printf("| ");
+            }
+        }
+        printf("\n");
     }
 }
 
