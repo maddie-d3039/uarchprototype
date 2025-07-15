@@ -1024,6 +1024,7 @@ void mshr_preinserter(int address, int origin, int request_ID)
     {
         if (mshr.pre_entries[i].valid == FALSE)
         {
+             printf("here1");
             mshr.pre_entries[i].valid = TRUE;
             mshr.pre_entries[i].old_bits = mshr.pre_occupancy;
             mshr.pre_occupancy++;
