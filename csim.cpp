@@ -2126,6 +2126,7 @@ void decode_stage()
 
 #define max_instruction_length 15
 int length;
+int fetch_ready = 1;
 void predecode_stage()
 {
     if (new_pipeline.predecode_valid)
@@ -2254,13 +2255,18 @@ void predecode_stage()
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
         length = len;
+        fetch_ready = 1;
+        
     }else{
         new_pipeline.decode_valid=0;
     }
+    
 }
+
 
 void fetch_stage()
 {
+  
     int offset = EIP & 0x3F;
     int current_sector = offset / ibuffer_size;
     int line_offset = offset % cache_line_size;
@@ -2280,6 +2286,7 @@ void fetch_stage()
                     new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
                 }
             }
+                    
         }
         else
         {
@@ -2445,13 +2452,21 @@ void fetch_stage()
         bank_offset = TRUE;
     }
 
+    if(!fetch_ready){
+        new_pipeline.predecode_valid = 0;
+    }
     new_pipeline.predecode_EIP = EIP;
-    oldEIP = EIP;
     EIP += length;
+    oldEIP = EIP;
+
+   
+   
     if (length >= (16 - line_offset))
     {
         ibuffer_valid[current_sector] = FALSE;
     }
+    fetch_ready = 0;
+
 }
 
 void mshr_inserter()
