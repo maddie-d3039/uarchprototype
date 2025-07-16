@@ -1991,7 +1991,7 @@ void decode_stage()
         if (locked == 1)
         {
             new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-            new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+            new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
             new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
             new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
             break;
@@ -2002,8 +2002,10 @@ void decode_stage()
             {
                 if (mod == addressingLUT[i][2])
                 {
+                    //printf("addresing lut%d\n", addressingLUT[i][2]);
                     new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-                    new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                    new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                    //printf("%d %d\n", )
                     new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
                     new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
                     break;
@@ -2017,7 +2019,7 @@ void decode_stage()
             else
             {
                 new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-                new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
                 new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
                 new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
             }
@@ -2025,10 +2027,10 @@ void decode_stage()
     }
     // search operandLUT
     int op1base_selector, op2base_selector;
-    printf("hello %d\n",pipeline.decode_opcode);
+    //printf("hello %d\n",pipeline.decode_opcode);
     for (int i = 0; i < operandRows; i++)
     {
-        printf("%d\n",operandLUT[i][0]);
+        //printf("%d\n",operandLUT[i][0]);
         if (pipeline.decode_opcode == operandLUT[i][0])
         {
             op1base_selector = (operandLUT[i][1] << 2) + (operandLUT[i][2] << 1) + operandLUT[i][3];
@@ -2050,7 +2052,7 @@ void decode_stage()
     }
     else if (pipeline.decode_4bdisp)
     {
-        disp = ((pipeline.decode_dispimm[3] & 0xFF) << 3) + ((pipeline.decode_dispimm[2] & 0xFF) << 2) + ((pipeline.decode_dispimm[1] & 0xFF) << 1) + (pipeline.decode_dispimm[0] & 0xFF);
+        disp = ((pipeline.decode_dispimm[3] & 0xFF) << 24) + ((pipeline.decode_dispimm[2] & 0xFF) << 16) + ((pipeline.decode_dispimm[1] & 0xFF) << 8) + (pipeline.decode_dispimm[0] & 0xFF);
         disp_offset = 4;
     }
     if (pipeline.decode_1bimm)
@@ -2059,16 +2061,23 @@ void decode_stage()
     }
     else if (pipeline.decode_2bimm)
     {
-        imm = ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 1) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
+        imm = ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 8) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
     }
     else if (pipeline.decode_4bimm)
     {
-        imm = ((pipeline.decode_dispimm[disp_offset + 3] & 0xFF) << 3) + ((pipeline.decode_dispimm[disp_offset + 2] & 0xFF) << 2) +
-              ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 1) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
+        imm = ((pipeline.decode_dispimm[disp_offset + 3] & 0xFF) << 24) + ((pipeline.decode_dispimm[disp_offset + 2] & 0xFF) << 16) +
+              ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 8) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
     }
     // do this later
     sext_imm = imm;
-    printf("op1: %d op2: %d\n",op1base_selector,op2base_selector);
+    /*printf("op1: %d op2: %d\n",op1base_selector,op2base_selector);
+    printf("imm stuff %d %d %d %d %d\n", pipeline.decode_1bdisp, pipeline.decode_4bdisp,
+    pipeline.decode_1bimm, pipeline.decode_2bimm, pipeline.decode_4bimm);
+    for(int i =0;i<14;i++){
+        printf("%x ", pipeline.decode_dispimm[i]);
+    }
+    printf("\n");*/
+    printf("imm: 0x%x\n", imm);
     // select operand bases here
     if (op1base_selector == 0)
     {
@@ -2240,7 +2249,7 @@ void predecode_stage()
         int j = 0;
         for (int i = instIndex; i < 15; i++)
         { // copy over all displacement and immediate
-            new_pipeline.decode_dispimm[j] = instruction[instIndex];
+            new_pipeline.decode_dispimm[j] = instruction[i];
             j++;
         }
         new_pipeline.decode_instruction_length = len;
