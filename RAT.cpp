@@ -6,13 +6,13 @@ public:
     enum Registers
     {
         EAX_idx,
-        EBX_idx,
         ECX_idx,
         EDX_idx,
+        EBX_idx,
+        ESP_idx,
+        EBP_idx,
         ESI_idx,
         EDI_idx,
-        EBP_idx,
-        ESP_idx,
         GPR_Count
     } Registers;
 
