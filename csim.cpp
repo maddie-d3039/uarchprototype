@@ -746,7 +746,7 @@ void load_program(char *program_filename)
         EIP = program_base << 1;
     printf("Read %d words from program into memory.\n\n", ii);
 }
-
+int pause;
 void initialize(char *program_filename, int num_prog_files)
 {
     int i;
@@ -762,6 +762,7 @@ void initialize(char *program_filename, int num_prog_files)
     init_state();
 
     oldEIP = 0;
+    pause=0;
 
     for(i=0;i<GPR_Count;i++){
         rat.valid[i]=1;
@@ -1260,6 +1261,7 @@ void memory_stage()
 
 void execute_stage()
 {
+    //try to avoid doing casework here
     for(int i =0;i<num_stations;i++){
         for(int j=0;j<num_entries_per_RS;j++){
             if(stations[i].entries[j].entry_valid && stations[i].entries[j].op1_ready && stations[i].entries[j].op2_ready){
@@ -2129,7 +2131,7 @@ int length;
 int fetch_ready = 1;
 void predecode_stage()
 {
-    if (new_pipeline.predecode_valid)
+    if (pipeline.predecode_valid)
     {
         new_pipeline.decode_immSize = 0;
         unsigned char instruction[max_instruction_length];
@@ -2255,8 +2257,8 @@ void predecode_stage()
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
         length = len;
-        fetch_ready = 1;
-        
+        pause=1;
+        //EIP+=length;
     }else{
         new_pipeline.decode_valid=0;
     }
@@ -2266,12 +2268,9 @@ void predecode_stage()
 
 void fetch_stage()
 {
-    
-   // EIP = pipeline.fetch_newEIP;
     int offset = EIP & 0x3F;
     int current_sector = offset / ibuffer_size;
     int line_offset = offset % cache_line_size;
-
     if (line_offset <= 1)
     {
         if (ibuffer_valid[current_sector] == TRUE)
@@ -2463,19 +2462,13 @@ void fetch_stage()
         bank_offset = TRUE;
     }
 
-   
-    // new_pipeline.predecode_EIP = EIP;
-    // EIP += length;
-    // oldEIP = EIP;
-
-   
-   
+    new_pipeline.predecode_EIP = EIP;
+    oldEIP = EIP;
+    EIP += length;
     if (length >= (16 - line_offset))
     {
         ibuffer_valid[current_sector] = FALSE;
     }
-
-
 }
 
 void mshr_inserter()
@@ -2670,8 +2663,8 @@ void station_printer(){
     for(int i =0;i<num_stations;i++){
         printf("Station %d\n", i);
         for(int j=0;j<num_entries_per_RS;j++){
-            printf("%d %d %d %d %d", stations[i].entries[j].entry_valid, stations[i].entries[j].op1_ready, stations[i].entries[j].op2_ready
-                              , stations[i].entries[j].op1_base_val, stations[i].entries[j].op2_base_val                                     );
+            printf("%d %d %d 0x%x 0x%x %d", stations[i].entries[j].entry_valid, stations[i].entries[j].op1_ready, stations[i].entries[j].op2_ready
+                              , stations[i].entries[j].op1_combined_val, stations[i].entries[j].op2_combined_val, stations[i].entries[j].store_tag);
             if(j!=num_entries_per_RS-1){
                 printf("| ");
             }
