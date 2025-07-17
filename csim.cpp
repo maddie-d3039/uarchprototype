@@ -548,6 +548,9 @@ void idump(FILE *dumpsim_file)
     printf("Registers:\n");
     // printf("EAX: %d EBX: %d ECX: %d EDX: %d ESI: %d EDI: %d EBP: %d ESP: %d",EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP); //Need to fix this, currently dont have registers printing
     printf("\n");
+    printf("------------- FETCH Latches --------------\n");
+    printf("Fetching?   :  %d\n", !pipeline.predecode_valid);
+    printf("\n");
 
     printf("------------- PREDECODE   Latches --------------\n");
     printf("PD V        :  0x%04x\n", pipeline.predecode_valid);
