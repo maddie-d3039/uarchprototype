@@ -380,7 +380,7 @@ int ibuffer_valid[ibuffer_size];
 typedef struct PipeState_Entry_Struct
 {
     int predecode_valid, predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
-        predecode_offset, predecode_current_sector, predecode_line_offset, predecode_newEIP, fetch_newEIP,
+        predecode_offset, predecode_current_sector, predecode_line_offset,
         decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
         decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
         decode_is_modrm, decode_modrm, decode_is_sib, decode_sib, decode_dispimm[dispimm_size],
@@ -1035,7 +1035,6 @@ void mshr_preinserter(int address, int origin, int request_ID)
     {
         if (mshr.pre_entries[i].valid == FALSE)
         {
-             printf("here1");
             mshr.pre_entries[i].valid = TRUE;
             mshr.pre_entries[i].old_bits = mshr.pre_occupancy;
             mshr.pre_occupancy++;
@@ -1994,7 +1993,7 @@ void decode_stage()
         if (locked == 1)
         {
             new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-            new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+            new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
             new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
             new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
             break;
@@ -2005,8 +2004,10 @@ void decode_stage()
             {
                 if (mod == addressingLUT[i][2])
                 {
+                    //printf("addresing lut%d\n", addressingLUT[i][2]);
                     new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-                    new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                    new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                    //printf("%d %d\n", )
                     new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
                     new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
                     break;
@@ -2020,7 +2021,7 @@ void decode_stage()
             else
             {
                 new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][3] << 1) + addressingLUT[i][4];
-                new_pipeline.agbr_cs[op1_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
+                new_pipeline.agbr_cs[op2_addr_mode] = (addressingLUT[i][5] << 1) + addressingLUT[i][6];
                 new_pipeline.agbr_cs[is_op1_needed] = addressingLUT[i][7];
                 new_pipeline.agbr_cs[is_op2_needed] = addressingLUT[i][8];
             }
@@ -2028,10 +2029,10 @@ void decode_stage()
     }
     // search operandLUT
     int op1base_selector, op2base_selector;
-    printf("hello %d\n",pipeline.decode_opcode);
+    //printf("hello %d\n",pipeline.decode_opcode);
     for (int i = 0; i < operandRows; i++)
     {
-        printf("%d\n",operandLUT[i][0]);
+        //printf("%d\n",operandLUT[i][0]);
         if (pipeline.decode_opcode == operandLUT[i][0])
         {
             op1base_selector = (operandLUT[i][1] << 2) + (operandLUT[i][2] << 1) + operandLUT[i][3];
@@ -2053,7 +2054,7 @@ void decode_stage()
     }
     else if (pipeline.decode_4bdisp)
     {
-        disp = ((pipeline.decode_dispimm[3] & 0xFF) << 3) + ((pipeline.decode_dispimm[2] & 0xFF) << 2) + ((pipeline.decode_dispimm[1] & 0xFF) << 1) + (pipeline.decode_dispimm[0] & 0xFF);
+        disp = ((pipeline.decode_dispimm[3] & 0xFF) << 24) + ((pipeline.decode_dispimm[2] & 0xFF) << 16) + ((pipeline.decode_dispimm[1] & 0xFF) << 8) + (pipeline.decode_dispimm[0] & 0xFF);
         disp_offset = 4;
     }
     if (pipeline.decode_1bimm)
@@ -2062,16 +2063,23 @@ void decode_stage()
     }
     else if (pipeline.decode_2bimm)
     {
-        imm = ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 1) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
+        imm = ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 8) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
     }
     else if (pipeline.decode_4bimm)
     {
-        imm = ((pipeline.decode_dispimm[disp_offset + 3] & 0xFF) << 3) + ((pipeline.decode_dispimm[disp_offset + 2] & 0xFF) << 2) +
-              ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 1) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
+        imm = ((pipeline.decode_dispimm[disp_offset + 3] & 0xFF) << 24) + ((pipeline.decode_dispimm[disp_offset + 2] & 0xFF) << 16) +
+              ((pipeline.decode_dispimm[disp_offset + 1] & 0xFF) << 8) + (pipeline.decode_dispimm[disp_offset] & 0xFF);
     }
     // do this later
     sext_imm = imm;
-    printf("op1: %d op2: %d\n",op1base_selector,op2base_selector);
+    /*printf("op1: %d op2: %d\n",op1base_selector,op2base_selector);
+    printf("imm stuff %d %d %d %d %d\n", pipeline.decode_1bdisp, pipeline.decode_4bdisp,
+    pipeline.decode_1bimm, pipeline.decode_2bimm, pipeline.decode_4bimm);
+    for(int i =0;i<14;i++){
+        printf("%x ", pipeline.decode_dispimm[i]);
+    }
+    printf("\n");*/
+    printf("imm: 0x%x\n", imm);
     // select operand bases here
     if (op1base_selector == 0)
     {
@@ -2128,7 +2136,6 @@ void decode_stage()
 
 #define max_instruction_length 15
 int length;
-int fetch_ready = 1;
 void predecode_stage()
 {
     if (pipeline.predecode_valid)
@@ -2244,7 +2251,7 @@ void predecode_stage()
         int j = 0;
         for (int i = instIndex; i < 15; i++)
         { // copy over all displacement and immediate
-            new_pipeline.decode_dispimm[j] = instruction[instIndex];
+            new_pipeline.decode_dispimm[j] = instruction[i];
             j++;
         }
         new_pipeline.decode_instruction_length = len;
@@ -2262,15 +2269,30 @@ void predecode_stage()
     }else{
         new_pipeline.decode_valid=0;
     }
-    
 }
-
 
 void fetch_stage()
 {
+    if(pause==1){
+        pause=0;
+        new_pipeline.predecode_valid = FALSE;
+        return;
+    }
+
     int offset = EIP & 0x3F;
     int current_sector = offset / ibuffer_size;
     int line_offset = offset % cache_line_size;
+
+    //printf("length %d\n", length);
+    oldEIP = EIP;
+    EIP += length;
+    new_pipeline.predecode_EIP = EIP;
+    if (length >= (16 - line_offset))
+    {
+        ibuffer_valid[current_sector] = FALSE;
+    }
+
+
     if (line_offset <= 1)
     {
         if (ibuffer_valid[current_sector] == TRUE)
@@ -2287,10 +2309,6 @@ void fetch_stage()
                     new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
                 }
             }
-            if(!fetch_ready){
-             new_pipeline.predecode_valid = 0;
-             }     
-             fetch_ready = 0;    
         }
         else
         {
@@ -2313,12 +2331,6 @@ void fetch_stage()
                     new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
                 }
             }
-    
-          if(!fetch_ready){
-             new_pipeline.predecode_valid = 0;
-             }     
-             fetch_ready = 0; 
-            
         }
         else
         {
@@ -2460,14 +2472,6 @@ void fetch_stage()
             mshr_preinserter(EIP + 48, 0, 0);
         }
         bank_offset = TRUE;
-    }
-
-    new_pipeline.predecode_EIP = EIP;
-    oldEIP = EIP;
-    EIP += length;
-    if (length >= (16 - line_offset))
-    {
-        ibuffer_valid[current_sector] = FALSE;
     }
 }
 
