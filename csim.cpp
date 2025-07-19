@@ -229,7 +229,7 @@ int tempEIP; // used for branch resteering
 int tempOffset;
 // used for bus arbiter
 int serializer_entry_to_send;
-
+int end_of_file = 0;
 // --------------------------------------------------------------
 // Struct for Register Alias Pool (global IDs 0..63)
 // --------------------------------------------------------------
@@ -551,11 +551,22 @@ void idump(FILE *dumpsim_file)
     printf("------------- FETCH Latches --------------\n");
     printf("Fetching?   :  %d\n", !pipeline.predecode_valid);
     printf("\n");
-
+    printf("-----------IBUFFER------------\n");
+      for(int i = 0; i < ibuffer_size; i++){
+        for(int j = 0; j < cache_line_size; j++){
+            printf("%d ",ibuffer[i][j]);
+        }
+        printf("\n");
+    }
+    printf("VALID:");
+    for(int i = 0; i < ibuffer_size; i++){
+        printf(" %d ", ibuffer_valid[i]);
+    }
+    printf("\n");
     printf("------------- PREDECODE   Latches --------------\n");
     printf("PD V        :  0x%04x\n", pipeline.predecode_valid);
     printf("\n");
-    printf("PD EIP      :  %d\n", pipeline.predecode_EIP);
+    printf("PD EIP      :  %d\n", EIP);
     printf("\n");
 
     printf("------------- DECODE Latches --------------\n");
@@ -744,6 +755,18 @@ void load_program(char *program_filename)
         // printf("%x\n",(word >> 8) & 0x00FF);
         ii += 2;
     }
+   
+
+    int a  = 0xFFFF;
+    int address = program_base + ii;
+
+    int i = (address & 0x30) >> 4;
+    int j = (address & 0x7F00) >> 8;
+    int k = (((address & 0xC) >> 2) + ((address & 0xC0) >> 4));
+    int l = (address & 0x3);
+
+    dram.banks[i].rows[j].columns[k].bytes[l] = a & 0x00FF;
+    dram.banks[i].rows[j].columns[k].bytes[l + 1] = (a >> 8) & 0x00FF;
 
     if (EIP == 0)
         EIP = program_base << 1;
@@ -2197,6 +2220,7 @@ void predecode_stage()
         {
             opcode = instruction[instIndex];
             instIndex++;
+            len++;
             new_pipeline.decode_is_prefix = 0;
         }
         if (!(opcode == 0x05 || opcode == 0x04))
@@ -2263,12 +2287,13 @@ void predecode_stage()
         {
             new_pipeline.decode_instruction_register[i] = instruction[i];
         }
-        new_pipeline.decode_EIP = new_pipeline.predecode_EIP;
+        new_pipeline.decode_EIP = EIP;
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
         length = len;
         pause=1;
-        //EIP+=length;
+        EIP+= length;
+
     }else{
         new_pipeline.decode_valid=0;
     }
@@ -2276,27 +2301,39 @@ void predecode_stage()
 
 void fetch_stage()
 {
-    if(pause==1){
-        pause=0;
-        new_pipeline.predecode_valid = FALSE;
-        return;
+    for(int i = 0; i < ibuffer_size; i++){ //check if you've read in the terminator instruction (xffff)
+        for(int j = 0; j < cache_line_size; j++){
+            if(j != cache_line_size -1){
+                if(ibuffer[i][j] == 0x0ff && ibuffer[i][j+1] == 0x0ff){
+                end_of_file = 1;
+            }
+            }
+        }
     }
-
+    // if(pause==1){
+    //     pause=0;
+    //     new_pipeline.predecode_valid = FALSE;
+    //     return;
+    // }
+  
     int offset = EIP & 0x3F;
-    int current_sector = offset / ibuffer_size;
+    int current_sector = offset / cache_line_size;
+   // int current_sector = offset / ibuffer_size;
     int line_offset = offset % cache_line_size;
-
+    printf("current: %d\n", current_sector);
     //printf("length %d\n", length);
-    oldEIP = EIP;
-    EIP += length;
-    new_pipeline.predecode_EIP = EIP;
+    // oldEIP = EIP;
+    // EIP += length;
+    // new_pipeline.predecode_EIP = EIP;
     if (length >= (16 - line_offset))
     {
+        
         ibuffer_valid[current_sector] = FALSE;
+    
     }
 
 
-    if (line_offset <= 1)
+    if (line_offset <= 1 || end_of_file)
     {
         if (ibuffer_valid[current_sector] == TRUE)
         {
@@ -2315,6 +2352,7 @@ void fetch_stage()
         }
         else
         {
+        
             new_pipeline.predecode_valid = FALSE;
         }
     }
@@ -2338,6 +2376,7 @@ void fetch_stage()
         else
         {
             new_pipeline.predecode_valid = FALSE;
+        
         }
     }
 
@@ -2476,6 +2515,9 @@ void fetch_stage()
         }
         bank_offset = TRUE;
     }
+    // oldEIP = EIP;
+  // EIP += length;
+    //new_pipeline.predecode_EIP = EIP;
 }
 
 void mshr_inserter()
