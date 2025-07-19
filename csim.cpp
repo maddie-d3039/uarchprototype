@@ -40,6 +40,7 @@ void tlb_write();
 void mshr_printer();
 void bus_printer();
 void station_printer();
+void rob_printer();
 void cache_printer();
 
 #define control_store_rows 20 // arbitrary
@@ -554,7 +555,7 @@ void idump(FILE *dumpsim_file)
     printf("-----------IBUFFER------------\n");
       for(int i = 0; i < ibuffer_size; i++){
         for(int j = 0; j < cache_line_size; j++){
-            printf("%d ",ibuffer[i][j]);
+            printf("0x%x ",ibuffer[i][j]);
         }
         printf("\n");
     }
@@ -575,6 +576,20 @@ void idump(FILE *dumpsim_file)
     // printf("DC IR       :  0x%04x\n", pipeline.decode_instruction_register );
     printf("DC IL       :  0x%04x\n", pipeline.decode_instruction_length);
     printf("DC EIP      :  %d\n", pipeline.decode_EIP);
+    printf("DC IMMSZ    :  %d\n", pipeline.decode_immSize);
+    printf("DC OFF      :  %d\n", pipeline.decode_offset);
+    printf("DC PF?      :  %d\n", pipeline.decode_is_prefix);
+    printf("DC PF       :  0x%x\n", pipeline.decode_prefix);
+    printf("DC OP       :  0x%x\n", pipeline.decode_opcode);
+    printf("DC RM?      :  %d\n", pipeline.decode_is_modrm);
+    printf("DC RM       :  0x%x\n", pipeline.decode_modrm);
+    printf("DC SIB?     :  %d\n", pipeline.decode_is_sib);
+    printf("DC SIB      :  0x%x\n", pipeline.decode_sib);
+    printf("DC 1BD      :  %d\n", pipeline.decode_1bdisp);
+    printf("DC 4BD      :  %d\n", pipeline.decode_4bdisp);
+    printf("DC 1BI      :  %d\n", pipeline.decode_1bimm);
+    printf("DC 2BI      :  %d\n", pipeline.decode_2bimm);
+    printf("DC 4BI      :  %d\n", pipeline.decode_4bimm);
     printf("\n");
 
     printf("------------- AGEN_BR  Latches --------------\n");
@@ -592,7 +607,7 @@ void idump(FILE *dumpsim_file)
     printf("AGBR_CS     :  ");
     for (k = 0; k < num_control_store_bits; k++)
     {
-        printf("%d\n", pipeline.agbr_cs[k]);
+        printf("%d  ", pipeline.agbr_cs[k]);
     }
 
     printf("\n\n------------- REG RENAME   Latches --------------\n");
@@ -688,6 +703,11 @@ void get_command(FILE *dumpsim_file)
         station_printer();
         break;
 
+    case 'v':
+    case 'V':
+        rob_printer();
+        break;
+
     case 'R':
     case 'r':
         if (buffer[1] == 'd' || buffer[1] == 'D')
@@ -772,7 +792,7 @@ void load_program(char *program_filename)
         EIP = program_base << 1;
     printf("Read %d words from program into memory.\n\n", ii);
 }
-int pause;
+int pause, globalID;
 void initialize(char *program_filename, int num_prog_files)
 {
     int i;
@@ -789,6 +809,7 @@ void initialize(char *program_filename, int num_prog_files)
 
     oldEIP = 0;
     pause=0;
+    globalID=0;
 
     for(i=0;i<GPR_Count;i++){
         rat.valid[i]=1;
@@ -936,7 +957,7 @@ StoreQueue sq;
 
 typedef struct ReservationStation_Entry_Struct
 {
-    int store_tag, entry_valid, updated_flags, old_bits;
+    int store_tag, entry_valid, updated_flags, old_bits, instruction_ID;
     // operand 1
     int op1_mem_alias, op1_mem_alias_valid;
     int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
@@ -1033,6 +1054,7 @@ Deserializer deserializer;
 typedef struct ROB_Entry_Struct
 {
     int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
+    int instruction_ID;
 } ROB_Entry;
 typedef struct ROB_Struct
 {
@@ -1286,11 +1308,22 @@ void memory_stage()
 
 void execute_stage()
 {
-    //try to avoid doing casework here
     for(int i =0;i<num_stations;i++){
         for(int j=0;j<num_entries_per_RS;j++){
             if(stations[i].entries[j].entry_valid && stations[i].entries[j].op1_ready && stations[i].entries[j].op2_ready){
-                printf("i want to execute\n");
+                int index_id;
+                for(int k =0;k<rob_size;k++){
+                    if(stations[i].entries[j].instruction_ID==rob.entries[k].instruction_ID){
+                        index_id=k;
+                        break;
+                    }
+                }
+                int result;
+                if(i==0){//add RS
+                    result = stations[i].entries[j].op1_combined_val+stations[i].entries[j].op2_combined_val;
+                    rob.entries[index_id].value=result;
+                    rob.entries[index_id].executed=TRUE;
+                }
                 break;
             }
         }
@@ -1317,20 +1350,17 @@ enum reservation_stations
     OR
 } reservation_stations;
 
-int regren_stall;
+int regren_stall;//this should occur when ROB or relevant RS is full
 void register_rename_stage()
 {
-    if (pipeline.rr_valid == FALSE)
-    {
-        return;
-    }
-
-    // precompute the RS entry that will
-    // be written into and write directly to that
     ReservationStation thisRS;
     thisRS = stations[pipeline.rr_operation];
     bool found_RS_entry = false;
     int entry_index;
+    
+    // precompute the RS entry that will
+    // be written into and write directly to that
+    
     for (int i = 0; i < num_entries_per_RS; i++)
     {
         if (thisRS.entries[i].entry_valid == FALSE)
@@ -1372,6 +1402,8 @@ void register_rename_stage()
             }
         }
     }
+    regren_stall=FALSE;
+
 
     // handle in progress operand generation through internal arithmetic
 
@@ -1622,6 +1654,18 @@ void register_rename_stage()
         }
     }
 
+
+    if (pipeline.rr_valid == FALSE)
+    {
+        return;
+    }
+    if (rob.occupancy==rob_size){
+        printf("hello\n");
+        regren_stall=TRUE;
+        return;
+    }
+    
+
     // want to determine what the operands will be
     // operand 1 (destination)
     printf("%d\n",pipeline.rr_op1_addr_mode);
@@ -1647,6 +1691,10 @@ void register_rename_stage()
         thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
         thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
         thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
+        if(rat.valid[pipeline.rr_op1_base]==TRUE){
+            thisRS.entries[entry_index].op1_ready=TRUE;
+            thisRS.entries[entry_index].op1_combined_val=rat.val[pipeline.rr_op1_base];
+        }
     }
     else if (pipeline.rr_op1_addr_mode == direct)
     {
@@ -1770,6 +1818,10 @@ void register_rename_stage()
         thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
         thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
         thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
+        if(rat.valid[pipeline.rr_op2_base]==TRUE){
+            thisRS.entries[entry_index].op2_ready=TRUE;
+            thisRS.entries[entry_index].op2_combined_val=rat.val[pipeline.rr_op2_base];
+        }
     }
     else if (pipeline.rr_op2_addr_mode == direct)
     {
@@ -1862,10 +1914,27 @@ void register_rename_stage()
         thisRS.entries[entry_index].op2_valid = FALSE;
     }
     stations[pipeline.rr_operation] = thisRS;
+    for(int i =0;i<rob_size;i++){
+        if(rob.entries[i].valid==FALSE){
+            rob.entries[i].valid=TRUE;
+            rob.entries[i].old_bits=rob.occupancy;
+            rob.occupancy++;
+            rob.entries[i].retired=FALSE;
+            rob.entries[i].executed=FALSE;
+            rob.entries[i].instruction_ID=globalID;
+            break;
+        }
+    }
+    thisRS.entries[entry_index].instruction_ID=globalID;
+    globalID++;
 }
 
 void addgen_branch_stage()
 {
+    if(regren_stall==TRUE){
+        printf("agstall\n");
+        return; // ***perhaps we can still predict even if stalling? worth discussing
+    }
     if (pipeline.agbr_valid && pipeline.agbr_cs[control_instruction_type])
     { // add control store bit for this
         bool prediction = branch_predictor->predict();
@@ -1899,24 +1968,24 @@ void addgen_branch_stage()
 #define operandRows 15
 #define operandCols 7
 int operationLUT[operationRows][operationCols] =
-    {12, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     5, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     128, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     129, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     131, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     2, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     3, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0,
-     12, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     13, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     128, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     129, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     131, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     8, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     9, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     10, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0,
-     11, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0};
+    {12, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     5, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     128, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     129, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     131, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     2, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     3, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     12, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     13, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     128, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     129, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     131, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     8, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     9, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     10, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+     11, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0};
 int addressingLUT[addressingRows][addressingCols] =
     {
         4, 0, 0, 0, 1, 0, 0, 1, 1,
@@ -1964,6 +2033,10 @@ int operandLUT[operandRows][operandCols] =
 
 void decode_stage()
 {
+    if(regren_stall==TRUE){
+        printf("decstall\n");
+        return;
+    }
     // use the pipeline latches to lookup in the LUTs
     // search operationLUT
     int mod = pipeline.decode_modrm >> 6;
@@ -1974,12 +2047,16 @@ void decode_stage()
     int base = (pipeline.decode_sib) & 0x7;
     for (int i = 0; i < operationRows; i++)
     {
+        //printf("op %d", pipeline.decode_opcode);
+        //printf("lu %d\n",operationLUT[i][0]);
         if (pipeline.decode_opcode == operationLUT[i][0])
         {
             if (operationLUT[i][1] == 1)
-            {
+            {   
+                //printf("hello\n");
                 if (reg == operationLUT[i][2])
                 {
+                    
                     // can latch operation, updated flags, and cntrl here
                     new_pipeline.agbr_cs[operation] = operationLUT[i][3];
                     new_pipeline.agbr_cs[updated_flags] = (operationLUT[i][4] << 7) +
@@ -1998,6 +2075,7 @@ void decode_stage()
             else
             {
                 new_pipeline.agbr_cs[operation] = operationLUT[i][3];
+                //printf("hi\n");
                 new_pipeline.agbr_cs[updated_flags] = (operationLUT[i][4] << 7) +
                                                       (operationLUT[i][5] << 6) +
                                                       (operationLUT[i][6] << 5) +
@@ -2164,6 +2242,10 @@ void decode_stage()
 int length;
 void predecode_stage()
 {
+    if(regren_stall==TRUE){
+        printf("pstall\n");
+        return;
+    }
     if (pipeline.predecode_valid)
     {
         new_pipeline.decode_immSize = 0;
@@ -2292,6 +2374,7 @@ void predecode_stage()
         new_pipeline.decode_prefix = prefix;
         length = len;
         pause=1;
+        oldEIP = EIP;
         EIP+= length;
 
     }else{
@@ -2310,11 +2393,16 @@ void fetch_stage()
             }
         }
     }
-    // if(pause==1){
-    //     pause=0;
-    //     new_pipeline.predecode_valid = FALSE;
-    //     return;
-    // }
+    
+    if(regren_stall==TRUE){
+        printf("fstall\n");
+        return; // *** maybe some fetch stuff can still happen during the stall? worth discussing
+    }
+     if(pause==1){
+         pause=0;
+         new_pipeline.predecode_valid = FALSE;
+         return;
+     }
   
     int offset = EIP & 0x3F;
     int current_sector = offset / cache_line_size;
@@ -2718,6 +2806,17 @@ void station_printer(){
                 printf("| ");
             }
         }
+        printf("\n");
+    }
+}
+
+void rob_printer(){
+    printf("REORDER BUFFER\n");
+    for(int i =0;i<rob_size;i++){
+        printf("V:%d O:%d R:%d E:%d Val: 0x%x T:%d S:%d ST:%d ID:%d", 
+        rob.entries[i].valid, rob.entries[i].old_bits,rob.entries[i].retired,
+        rob.entries[i].executed, rob.entries[i].value, rob.entries[i].store_tag,
+        rob.entries[i].speculative, rob.entries[i].speculation_tag, rob.entries[i].instruction_ID);
         printf("\n");
     }
 }
