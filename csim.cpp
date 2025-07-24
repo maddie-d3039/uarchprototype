@@ -16,6 +16,7 @@ ROB needs to account for speculatively executed so that wrong entries get cleare
 #include <cassert>
 #include "BP.cpp"
 #include "RAT.cpp"
+#include "CAT.cpp"
 #include "config.h"
 void fetch_stage();
 void predecode_stage();
@@ -39,6 +40,7 @@ void dcache_write_from_databus();
 void tlb_write();
 void mshr_printer();
 void bus_printer();
+void rat_printer();
 void station_printer();
 void rob_printer();
 void cache_printer();
@@ -171,6 +173,17 @@ enum Registers
     ESP_idx,
     GPR_Count
 } Registers;
+
+enum conditionCodes{ //condition codes changed by the subset of instructions
+    CF,
+    PF,
+    AF,
+    ZF,
+    SF,
+    OF,
+    DF,
+    Flag_Count
+};
 typedef struct Register_File_Struct
 {
     int EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP;
@@ -188,7 +201,7 @@ typedef struct Register_File_Struct
 
 RAT rat;
 
-// fat and flag file
+/* fat and flag file
 enum Flags
 {
     Carry_idx,
@@ -222,7 +235,9 @@ typedef struct FAT_Struct
     FAT_MetadataEntry metadata[Flag_Count];
 } FAT;
 
-FAT fat;
+*/
+
+CAT cat;
 
 int EIP;
 int oldEIP;
@@ -380,7 +395,7 @@ int ibuffer_valid[ibuffer_size];
 
 typedef struct PipeState_Entry_Struct
 {
-    int predecode_valid, predecode_ibuffer[ibuffer_size][cache_line_size], predecode_EIP,
+    int predecode_valid, predecode_potential[15], predecode_EIP,
         predecode_offset, predecode_current_sector, predecode_line_offset,
         decode_valid, decode_instruction_length, decode_EIP, decode_immSize,
         decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
@@ -688,6 +703,11 @@ void get_command(FILE *dumpsim_file)
         mshr_printer();
         break;
 
+    case 'p':
+    case 'P':
+        rat_printer();
+        break;
+
     case 'c':
     case 'C':
         cache_printer();
@@ -813,6 +833,9 @@ void initialize(char *program_filename, int num_prog_files)
 
     for(i=0;i<GPR_Count;i++){
         rat.valid[i]=1;
+    }
+    for(i=0;i<Flag_Count;i++){
+        cat.valid[i]=1;
     }
 
     tlb.entries[0].valid=1;
@@ -957,7 +980,7 @@ StoreQueue sq;
 
 typedef struct ReservationStation_Entry_Struct
 {
-    int store_tag, entry_valid, updated_flags, old_bits, instruction_ID;
+    int store_tag, store_tag_valid, entry_valid, updated_flags, old_bits, instruction_ID, blocked;
     // operand 1
     int op1_mem_alias, op1_mem_alias_valid;
     int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
@@ -1288,8 +1311,24 @@ void writeback_stage()
             }
             rob_broadcast_value = rob.entries[i].value;
             rob_broadcast_tag = rob.entries[i].store_tag;
+            //rat broadcast
+            for(int j=0;j<GPR_Count;j++){
+                if(rat.valid[j]==FALSE&& rat.tag[j]==rob_broadcast_tag){
+                    rat.val[j]=rob_broadcast_value;
+                    rat.valid[j]=TRUE;
+                }
+            }
+            //
+            for(int j=0;j<Flag_Count;j++){
+                if(cat.valid[j]==FALSE&& cat.tag[j]==rob_broadcast_tag){
+                    cat.val[j]=1;
+                    cat.valid[j]=TRUE;
+                }
+            }
+            //lq sq broadcast do later
             rob.entries[i].valid = 0;
             rob.entries[i].retired = 1;
+            rob.occupancy--;
             for (int j = 0; j < rob_size; j++)
             {
                 if ((rob.entries[j].valid == TRUE) && (rob.entries[j].retired == FALSE))
@@ -1297,7 +1336,11 @@ void writeback_stage()
                     rob.entries[j].old_bits--;
                 }
             }
+            // need to to do this : if(rat alias)
+            rat.deallocateAlias(rob.entries[i].store_tag);
             break;
+        }else if(rob.entries[i].valid==FALSE && rob.entries[i].retired==TRUE){
+            rob.entries[i].retired=FALSE;
         }
     }
 }
@@ -1312,19 +1355,53 @@ void execute_stage()
         for(int j=0;j<num_entries_per_RS;j++){
             if(stations[i].entries[j].entry_valid && stations[i].entries[j].op1_ready && stations[i].entries[j].op2_ready){
                 int index_id;
+                    printf("hi\n");
                 for(int k =0;k<rob_size;k++){
-                    if(stations[i].entries[j].instruction_ID==rob.entries[k].instruction_ID){
+                    printf("hi1\n");
+                    if(stations[i].entries[j].store_tag==rob.entries[k].store_tag){
+                    printf("hi2\n");
                         index_id=k;
                         break;
                     }
                 }
+                printf("hi\n");
                 int result;
                 if(i==0){//add RS
                     result = stations[i].entries[j].op1_combined_val+stations[i].entries[j].op2_combined_val;
                     rob.entries[index_id].value=result;
+                    if(stations[i].entries[j].store_tag_valid==TRUE){
+                        for(int k =0;k<num_stations;k++){
+                            for(int l=0;l<num_entries_per_RS;l++){
+                                if(i==k && j==l){
+                                    break;
+                                }
+                                if(stations[k].entries[l].entry_valid==TRUE){
+                                    //operand 1
+                                    if(stations[k].entries[l].op1_base_valid==FALSE &&
+                                    stations[k].entries[l].op1_base_tag ==
+                                    stations[i].entries[j].store_tag){
+                                        stations[k].entries[l].op1_base_val=result;
+                                    }
+                                    //operand 2
+                                    if(stations[k].entries[l].op2_base_valid==FALSE &&
+                                    stations[k].entries[l].op2_base_tag ==
+                                    stations[i].entries[j].store_tag){
+                                        stations[k].entries[l].op2_base_val=result;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     rob.entries[index_id].executed=TRUE;
                 }
+                stations[i].entries[j].entry_valid=FALSE;
+                stations[i].entries[j].store_tag_valid=FALSE;
+                stations[i].entries[j].blocked=TRUE;
+                stations[i].occupancy--;
                 break;
+            }else if(stations[i].entries[j].blocked==TRUE){
+                stations[i].entries[j].blocked=FALSE;
             }
         }
     }
@@ -1363,7 +1440,7 @@ void register_rename_stage()
     
     for (int i = 0; i < num_entries_per_RS; i++)
     {
-        if (thisRS.entries[i].entry_valid == FALSE)
+        if (thisRS.entries[i].entry_valid == FALSE && thisRS.entries[i].blocked == FALSE)
         {
             entry_index = i;
             found_RS_entry = true;
@@ -1671,6 +1748,8 @@ void register_rename_stage()
     printf("%d\n",pipeline.rr_op1_addr_mode);
     printf("%d\n",pipeline.rr_op2_addr_mode);
     printf("\n");
+
+    int alias;
     if (pipeline.rr_op1_addr_mode == immediate)
     {
         thisRS.entries[entry_index].old_bits = thisRS.occupancy;
@@ -1695,6 +1774,11 @@ void register_rename_stage()
             thisRS.entries[entry_index].op1_ready=TRUE;
             thisRS.entries[entry_index].op1_combined_val=rat.val[pipeline.rr_op1_base];
         }
+        rat.valid[pipeline.rr_op1_base]=FALSE;
+        alias=  rat.getAlias();
+        rat.tag[pipeline.rr_op1_base]=alias;
+        thisRS.entries[entry_index].store_tag=alias;
+        thisRS.entries[entry_index].store_tag_valid=TRUE;
     }
     else if (pipeline.rr_op1_addr_mode == direct)
     {
@@ -1915,17 +1999,19 @@ void register_rename_stage()
     }
     stations[pipeline.rr_operation] = thisRS;
     for(int i =0;i<rob_size;i++){
-        if(rob.entries[i].valid==FALSE){
+        if(rob.entries[i].valid==FALSE && rob.entries[i].retired==FALSE){
             rob.entries[i].valid=TRUE;
             rob.entries[i].old_bits=rob.occupancy;
             rob.occupancy++;
             rob.entries[i].retired=FALSE;
             rob.entries[i].executed=FALSE;
             rob.entries[i].instruction_ID=globalID;
+            rob.entries[i].store_tag=alias;
             break;
         }
     }
     thisRS.entries[entry_index].instruction_ID=globalID;
+    cat.makeAliases(pipeline.rr_updated_flags,alias);
     globalID++;
 }
 
@@ -2249,58 +2335,20 @@ void predecode_stage()
     if (pipeline.predecode_valid)
     {
         new_pipeline.decode_immSize = 0;
-        unsigned char instruction[max_instruction_length];
-        int index = new_pipeline.predecode_EIP & 0x003F;
-        int part1 = -1;
-        int part2 = -1;
-        int len = 0;
-        unsigned char prefix = -1;
-        unsigned char opcode;
-        if (index < cache_line_size)
-        {
-            part1 = 0;
-        }
-        else if (index < 32)
-        {
-            part1 = 1;
-        }
-        else if (index < 48)
-        {
-            part1 = 2;
-        }
-        else if (index < 64)
-        {
-            part1 = 3;
-        }
-        if ((index % 16) > 1)
-        { // need next cache line as well if the offset is over 1
-            part2 = (part1 + 1) % 4;
-        }
-        index = index % 16;
-        int curPart = part1;
-        for (int i = 0; i < 15; i++)
-        { // copy over instruction, using bytes from the second cache line if needed
-            instruction[i] = pipeline.predecode_ibuffer[curPart][index];
-            index++;
-            if (index > 15)
-            {
-                index = 0;
-                curPart = part2;
-            }
-        }
+        int len, prefix, opcode;
         int instIndex = 0;
-        if (instruction[instIndex] == 0x66 || instruction[instIndex] == 0x67)
+        if (pipeline.predecode_potential[instIndex] == 0x66 || pipeline.predecode_potential[instIndex] == 0x67)
         { // check prefix
             len+=2;
-            prefix = instruction[instIndex];
+            prefix = pipeline.predecode_potential[instIndex];
             instIndex++;
-            opcode = instruction[instIndex];
+            opcode = pipeline.predecode_potential[instIndex];
             instIndex++;
             new_pipeline.decode_is_prefix = 1;
         }
         else
         {
-            opcode = instruction[instIndex];
+            opcode = pipeline.predecode_potential[instIndex];
             instIndex++;
             len++;
             new_pipeline.decode_is_prefix = 0;
@@ -2309,14 +2357,14 @@ void predecode_stage()
         { // if an instruction tha requires a mod/rm byte
             len += 1;
             new_pipeline.decode_is_modrm = 1;
-            unsigned char mod_rm = instruction[instIndex];
+            unsigned char mod_rm = pipeline.predecode_potential[instIndex];
             instIndex++;
             new_pipeline.decode_modrm = mod_rm;
             if ((mod_rm & 0b11000000) == 0 && (mod_rm & 0b0100) != 0)
             { // uses SIB byte
                 new_pipeline.decode_is_sib = true;
                 len++;
-                new_pipeline.decode_sib = instruction[instIndex];
+                new_pipeline.decode_sib = pipeline.predecode_potential[instIndex];
                 instIndex++;
             }
             else
@@ -2360,28 +2408,29 @@ void predecode_stage()
         int j = 0;
         for (int i = instIndex; i < 15; i++)
         { // copy over all displacement and immediate
-            new_pipeline.decode_dispimm[j] = instruction[i];
+            new_pipeline.decode_dispimm[j] = pipeline.predecode_potential[i];
             j++;
         }
         new_pipeline.decode_instruction_length = len;
         new_pipeline.decode_valid = 1;
         for (int i = 0; i < max_instruction_length; i++)
         {
-            new_pipeline.decode_instruction_register[i] = instruction[i];
+            new_pipeline.decode_instruction_register[i] = pipeline.predecode_potential[i];
         }
         new_pipeline.decode_EIP = EIP;
         new_pipeline.decode_opcode = opcode;
         new_pipeline.decode_prefix = prefix;
         length = len;
-        pause=1;
-        oldEIP = EIP;
-        EIP+= length;
+        //oldEIP = EIP;
+        //EIP+= length;
 
     }else{
         new_pipeline.decode_valid=0;
     }
 }
 
+int oldIbuffer[4][16];
+int oldIbufferValid[4];
 void fetch_stage()
 {
     for(int i = 0; i < ibuffer_size; i++){ //check if you've read in the terminator instruction (xffff)
@@ -2398,11 +2447,6 @@ void fetch_stage()
         printf("fstall\n");
         return; // *** maybe some fetch stuff can still happen during the stall? worth discussing
     }
-     if(pause==1){
-         pause=0;
-         new_pipeline.predecode_valid = FALSE;
-         return;
-     }
   
     int offset = EIP & 0x3F;
     int current_sector = offset / cache_line_size;
@@ -2412,6 +2456,11 @@ void fetch_stage()
     //printf("length %d\n", length);
     // oldEIP = EIP;
     // EIP += length;
+    int tempEIP= EIP +length;
+    int temp_offset = tempEIP & 0x3F;
+    int temp_current_sector = temp_offset / cache_line_size;
+   // int current_sector = offset / ibuffer_size;
+    int temp_line_offset = temp_offset % cache_line_size;
     // new_pipeline.predecode_EIP = EIP;
     if (length >= (16 - line_offset))
     {
@@ -2421,21 +2470,19 @@ void fetch_stage()
     }
 
 
-    if (line_offset <= 1 || end_of_file)
+    if (temp_line_offset <= 1 || end_of_file)
     {
-        if (ibuffer_valid[current_sector] == TRUE)
+        if (oldIbufferValid[temp_current_sector] == TRUE)
         {
             // latch predecode valid and ibuffer
             new_pipeline.predecode_valid = TRUE;
-            new_pipeline.predecode_offset = offset;
-            new_pipeline.predecode_current_sector = current_sector;
-            new_pipeline.predecode_line_offset = line_offset;
-            for (int i = 0; i < ibuffer_size; i++)
+            new_pipeline.predecode_offset = temp_offset;
+            new_pipeline.predecode_current_sector = temp_current_sector;
+            new_pipeline.predecode_line_offset = temp_line_offset;
+            for (int i = 0; i < max_instruction_length; i++)
             {
-                for (int j = 0; j < cache_line_size; j++)
-                {
-                    new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
-                }
+                new_pipeline.predecode_potential[i]=oldIbuffer[temp_current_sector][temp_line_offset];
+                temp_line_offset++;
             }
         }
         else
@@ -2446,19 +2493,26 @@ void fetch_stage()
     }
     else
     {
-        if ((ibuffer_valid[current_sector] == TRUE) && (ibuffer_valid[(current_sector + 1) % ibuffer_size] == TRUE))
+        if ((oldIbufferValid[temp_current_sector] == TRUE) && (oldIbufferValid[(temp_current_sector + 1) % ibuffer_size] == TRUE))
         {
             // latch predecode valid and ibuffer
             new_pipeline.predecode_valid = TRUE;
-            new_pipeline.predecode_offset = offset;
-            new_pipeline.predecode_current_sector = current_sector;
-            new_pipeline.predecode_line_offset = line_offset;
-            for (int i = 0; i < ibuffer_size; i++)
+            new_pipeline.predecode_offset = temp_offset;
+            new_pipeline.predecode_current_sector = temp_current_sector;
+            new_pipeline.predecode_line_offset = temp_line_offset;
+            int tempVal = temp_line_offset;
+            int i;
+            for (i = 0; i < 16-temp_line_offset; i++)
             {
-                for (int j = 0; j < cache_line_size; j++)
-                {
-                    new_pipeline.predecode_ibuffer[i][j] = ibuffer[i][j];
-                }
+                new_pipeline.predecode_potential[i]=oldIbuffer[temp_current_sector][tempVal];
+                tempVal++;
+            }
+            int j;
+            int k =0;
+            for (int j = i; j < 15-(16-temp_line_offset); j++)
+            {
+                new_pipeline.predecode_potential[j]=oldIbuffer[temp_current_sector+1][k];
+                k++;
             }
         }
         else
@@ -2606,6 +2660,14 @@ void fetch_stage()
     // oldEIP = EIP;
   // EIP += length;
     //new_pipeline.predecode_EIP = EIP;
+    for(int i=0;i<4;i++){
+        for(int j =0;j<16;j++){
+            oldIbuffer[i][j]=ibuffer[i][j];
+        }
+        oldIbufferValid[i]=ibuffer_valid[i];
+    }
+    oldEIP=EIP;
+    EIP = tempEIP;
 }
 
 void mshr_inserter()
@@ -2775,6 +2837,17 @@ void mshr_printer()
     printf("\n\n\n");
 }
 
+void rat_printer(){
+    printf("RAT\n");
+    for(int i =0;i<GPR_Count;i++){
+        printf("Valid: %d Tag: %d Value: %d \n", rat.valid[i], rat.tag[i],rat.val[i]);
+    }
+    printf("CAT\n");
+    for(int i =0;i<Flag_Count;i++){
+        printf("Valid: %d Tag: %d Value: %d \n", cat.valid[i], cat.tag[i],cat.val[i]);
+    }
+}
+
 void cache_printer()
 {
     printf("ICACHE\n");
@@ -2800,8 +2873,8 @@ void station_printer(){
     for(int i =0;i<num_stations;i++){
         printf("Station %d\n", i);
         for(int j=0;j<num_entries_per_RS;j++){
-            printf("%d %d %d 0x%x 0x%x %d", stations[i].entries[j].entry_valid, stations[i].entries[j].op1_ready, stations[i].entries[j].op2_ready
-                              , stations[i].entries[j].op1_combined_val, stations[i].entries[j].op2_combined_val, stations[i].entries[j].store_tag);
+            printf("Valid: %d %d %d 0x%x 0x%x %d ID: %d", stations[i].entries[j].entry_valid, stations[i].entries[j].op1_ready, stations[i].entries[j].op2_ready
+                              , stations[i].entries[j].op1_combined_val, stations[i].entries[j].op2_combined_val, stations[i].entries[j].store_tag, stations[i].entries[j].instruction_ID);
             if(j!=num_entries_per_RS-1){
                 printf("| ");
             }
