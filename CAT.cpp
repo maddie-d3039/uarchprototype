@@ -1,5 +1,6 @@
 #include "config.h"
 class CAT{
+    public:
 enum conditionCodes{ //condition codes changed by the subset of instructions
     CF,
     PF,
@@ -7,7 +8,8 @@ enum conditionCodes{ //condition codes changed by the subset of instructions
     ZF,
     SF,
     OF,
-    DF
+    DF,
+    Flag_Count
 }; //each entry in the FAT corresponds to a specific flag 
 struct ConditionAliasPool {
     int tags[flag_alias_pool_entries];
@@ -41,36 +43,35 @@ void deallocateAlias(int alias) {
      }
 }
 
-bool makeAliases(int* cs_line){ //make a class for the control store 
-    int alias = getAlias();
+bool makeAliases(int flags, int alias){ //make a class for the control store 
     if(alias == -1){
         return false;
     }
-    if(sets cf){ //placeholder
+    if((flags&0x40)>>6){ //placeholder
         tag[CF] = alias;
         valid[CF] = 0;
     }
-    if(sets pf){ //placeholder
+    if((flags&0x20)>>5){ //placeholder
         tag[PF] = alias;
         valid[PF] = 0;
     }   
-    if(sets af){ //placeholder
+    if((flags&0x10)>>4){ //placeholder
         tag[AF] = alias;
         valid[AF] = 0;
     }
-    if(sets zf){ //placeholder
+    if((flags&0x8)>>3){ //placeholder
         tag[ZF] = alias;
         valid[ZF] = 0;
     }
-    if(sets sf){ //placeholder
+    if((flags&0x4)>>2){ //placeholder
         tag[SF] = alias;
         valid[SF] = 0;
     }
-    if(sets of){ //placeholder
+    if((flags&0x2)>>1){ //placeholder
         tag[OF] = alias;
         valid[OF] = 0;
     }
-    if(sets df){ //placeholder
+    if(flags&0x1){ //placeholder
         tag[DF] = alias;
         valid[DF] = 0;
     }
