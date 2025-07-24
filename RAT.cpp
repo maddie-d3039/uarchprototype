@@ -37,9 +37,9 @@ public:
     {
         for (int i = 0; i < REGISTER_ALIAS_POOL_ENTRIES; ++i)
         {
-            if (!valid[i])
+            if (!pool_aliases->valid[i])
             {
-                valid[i] = true;
+                pool_aliases->valid[i] = true;
                 return pool_aliases->tags[i];
             }
         }
@@ -57,7 +57,7 @@ public:
         assert(index >= 0 && index < REGISTER_ALIAS_POOL_ENTRIES && "RegisterAliasPool::free(): alias out of range!");
 
         // 2) Assert that this slot was previously allocated (valid == true)
-        assert(valid[index] && "RegisterAliasPool::free(): alias was not allocated!");
+        assert(pool_aliases->valid[index] && "RegisterAliasPool::free(): alias was not allocated!");
 
         // Finally, mark it free again
         pool_aliases->valid[index] = false;
