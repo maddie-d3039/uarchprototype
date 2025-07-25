@@ -402,10 +402,10 @@ typedef struct PipeState_Entry_Struct
         decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
         decode_is_modrm, decode_modrm, decode_is_sib, decode_sib, decode_dispimm[dispimm_size],
         decode_1bdisp, decode_4bdisp, decode_1bimm, decode_2bimm, decode_4bimm,
-        agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP,
+        agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP, agbr_halt,
         agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
-        agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset,
-        rr_valid, rr_operation, rr_updated_flags,
+        agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset, agbr32_16, //0 is 32 bits, 1 is 16 bits
+        rr_valid, rr_operation, rr_updated_flags, rr32_16, rr_halt,
         rr_op1_base, rr_op1_index, rr_op1_scale, rr_op1_disp, rr_op1_addr_mode,
         rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode;
 
@@ -465,6 +465,7 @@ void cycle()
     cycle_count++;
 }
 
+int halt=0;
 void run(int num_cycles)
 {
     int i;
@@ -478,13 +479,13 @@ void run(int num_cycles)
     printf("Simulating for %d cycles...\n\n", num_cycles);
     for (i = 0; i < num_cycles; i++)
     {
-        /*if (EIP == 0x0000)
+        if (halt==1)
         {
             cycle();
             RUN_BIT = FALSE;
             printf("Simulator halted\n\n");
             break;
-        }*/
+        }
         cycle();
     }
 }
@@ -985,7 +986,7 @@ StoreQueue sq;
 
 typedef struct ReservationStation_Entry_Struct
 {
-    int store_tag, store_tag_valid, entry_valid, updated_flags, old_bits, instruction_ID, blocked;
+    int store_tag, store_tag_valid, entry_valid, updated_flags, old_bits, instruction_ID, blocked, mode32_16;
     // operand 1
     int op1_mem_alias, op1_mem_alias_valid;
     int op1_addr_mode, op1_base_valid, op1_base_tag, op1_base_val;
@@ -1082,7 +1083,7 @@ Deserializer deserializer;
 typedef struct ROB_Entry_Struct
 {
     int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
-    int instruction_ID;
+    int instruction_ID, flagResults, halt;
 } ROB_Entry;
 typedef struct ROB_Struct
 {
@@ -1333,7 +1334,7 @@ void writeback_stage()
             {
                 if (cat.valid[j] == FALSE && cat.tag[j] == rob_broadcast_tag)
                 {
-                    cat.val[j] = 1;
+                    cat.val[j] = ((rob.entries[i].flagResults>>j)&0x1);
                     cat.valid[j] = TRUE;
                 }
             }
@@ -1351,10 +1352,10 @@ void writeback_stage()
             // need to to do this : if(rat alias)
             rat.deallocateAlias(rob.entries[i].store_tag);
             break;
-        }
-        else if (rob.entries[i].valid == FALSE && rob.entries[i].retired == TRUE)
-        {
+        }else if (rob.entries[i].valid == FALSE && rob.entries[i].retired == TRUE){
             rob.entries[i].retired = FALSE;
+        }else if ((rob.entries[i].valid == TRUE) && rob.entries[i].halt == TRUE){
+            halt=1;
         }
     }
 }
@@ -1384,11 +1385,22 @@ void execute_stage()
                     }
                 }
                 printf("hi\n");
-                int result;
+                long result;int overflow;
                 if (i == 0)
                 { // add RS
                     result = stations[i].entries[j].op1_combined_val + stations[i].entries[j].op2_combined_val;
-                    rob.entries[index_id].value = result;
+                    overflow=0;
+                    if(((stations[i].entries[j].op1_combined_val&0x80000000)==0)&&((stations[i].entries[j].op2_combined_val&0x80000000)==0)&&((result&0x80000000)==1)){
+                        overflow=1;
+                    }else if(((stations[i].entries[j].op1_combined_val&0x80000000)==1)&&((stations[i].entries[j].op2_combined_val&0x80000000)==1)&&((result&0x80000000)==0)){
+                        overflow=1;
+                    }
+                    if(stations[i].entries[j].mode32_16==1){
+                        rob.entries[index_id].value = result&0x0FFFF;
+                    }else{
+                        rob.entries[index_id].value = result&0x0FFFFFFFF;
+                    }
+
                     if (stations[i].entries[j].store_tag_valid == TRUE)
                     {
                         for (int k = 0; k < num_stations; k++)
@@ -1419,6 +1431,46 @@ void execute_stage()
                             }
                         }
                     }
+                    //parity flag
+                    int bitsSet;
+                    int LSB = result&0x0FF;
+                    int layer0_0 = !((LSB>>7) ^ ((LSB>>6)&0x1));
+                    int layer0_1 = !(((LSB>>5)&0x1) ^ ((LSB>>4)&0x1));
+                    int layer0_2 = !(((LSB>>3)&0x1) ^ ((LSB>>2)&0x1));
+                    int layer0_3 = !(((LSB>>1)&0x1) ^ ((LSB)&0x1));
+                    int layer1_0 = !(layer0_0 ^ layer0_1);
+                    int layer1_1 = !(layer0_2 ^ layer0_3);
+                    int parity = (!(layer1_0 ^ layer1_1))<<5;
+                    rob.entries[index_id].flagResults+=parity;
+                    //zero flag
+                    int zero=0;
+                    if(result==0){
+                        zero=1;
+                    }
+                    rob.entries[index_id].flagResults+=(zero<<3);
+                    //sign flag
+                    int sign=0;
+                    if(result<0){
+                        sign=1;
+                    }
+                    rob.entries[index_id].flagResults+=(sign<<2);
+                    //carry flag
+                    int carry=0;
+                    if(stations[i].entries[j].mode32_16==1){
+                        if((result&0x10000)!=0){
+                            carry = 1;
+                        }
+                    }else if(stations[i].entries[j].mode32_16==0){
+                        if((result&0x100000000)!=0){
+                            carry = 1;
+                        }
+                    }
+                    rob.entries[index_id].flagResults+=(carry<<6);
+                    //auxiliary flag
+                    int auxiliary = (((stations[i].entries[j].op1_combined_val ^ stations[i].entries[j].op2_combined_val ^ result) & 0x10) != 0);
+                    rob.entries[index_id].flagResults+=(auxiliary<<4);
+                    //overflow flag
+                    rob.entries[index_id].flagResults+=(overflow<<1);
 
                     rob.entries[index_id].executed = TRUE;
                 }
@@ -1772,259 +1824,262 @@ void register_rename_stage()
 
     // want to determine what the operands will be
     // operand 1 (destination)
-    printf("%d\n", pipeline.rr_op1_addr_mode);
-    printf("%d\n", pipeline.rr_op2_addr_mode);
-    printf("\n");
+    //printf("%d\n", pipeline.rr_op1_addr_mode);
+    //printf("%d\n", pipeline.rr_op2_addr_mode);
+    //printf("\n");
 
     int alias;
-    if (pipeline.rr_op1_addr_mode == immediate)
-    {
-        thisRS.entries[entry_index].old_bits = thisRS.occupancy;
-        thisRS.occupancy++;
-        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op1_ready = TRUE;
-        thisRS.entries[entry_index].op1_combined_val = pipeline.rr_op1_base;
-    }
-    else if (pipeline.rr_op1_addr_mode == reg)
-    {
-        thisRS.entries[entry_index].old_bits = thisRS.occupancy;
-        thisRS.occupancy++;
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
-        thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
-        thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
-        if (rat.valid[pipeline.rr_op1_base] == TRUE)
+
+    if(pipeline.rr_halt==0){
+        if (pipeline.rr_op1_addr_mode == immediate)
         {
+            thisRS.entries[entry_index].old_bits = thisRS.occupancy;
+            thisRS.occupancy++;
+            thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
             thisRS.entries[entry_index].op1_ready = TRUE;
-            thisRS.entries[entry_index].op1_combined_val = rat.val[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_combined_val = pipeline.rr_op1_base;
         }
-        rat.valid[pipeline.rr_op1_base] = FALSE;
-        alias = rat.getAlias();
-        rat.tag[pipeline.rr_op1_base] = alias;
-        thisRS.entries[entry_index].store_tag = alias;
-        thisRS.entries[entry_index].store_tag_valid = TRUE;
-    }
-    else if (pipeline.rr_op1_addr_mode == direct)
-    {
-        thisRS.entries[entry_index].old_bits = thisRS.occupancy;
-        thisRS.occupancy++;
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        // check store queue
-        // this is the case where the address has already been computed
-        thisRS.entries[entry_index].op1_combined_val = pipeline.rr_op1_base;
-        thisRS.entries[entry_index].op1_ready = TRUE;
-
-        // since in direct mode the address is fully computed, can immediately search the store queue
-        bool found_data = false;
-        bool found_tag = false;
-        int current_old_bits = max_sq_size;
-        for (int i = 0; i < max_sq_size; i++)
+        else if (pipeline.rr_op1_addr_mode == reg)
         {
-            if (sq.entries[i].entry_valid == TRUE && sq.entries[i].address == pipeline.rr_op1_base &&
-                sq.entries[i].old_bits < current_old_bits)
+            thisRS.entries[entry_index].old_bits = thisRS.occupancy;
+            thisRS.occupancy++;
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
+            if (rat.valid[pipeline.rr_op1_base] == TRUE)
             {
-                current_old_bits = sq.entries[i].old_bits;
-                if (sq.entries[i].valid == TRUE)
+                thisRS.entries[entry_index].op1_ready = TRUE;
+                thisRS.entries[entry_index].op1_combined_val = rat.val[pipeline.rr_op1_base];
+            }
+            rat.valid[pipeline.rr_op1_base] = FALSE;
+            alias = rat.getAlias();
+            rat.tag[pipeline.rr_op1_base] = alias;
+            thisRS.entries[entry_index].store_tag = alias;
+            thisRS.entries[entry_index].store_tag_valid = TRUE;
+        }
+        else if (pipeline.rr_op1_addr_mode == direct)
+        {
+            thisRS.entries[entry_index].old_bits = thisRS.occupancy;
+            thisRS.occupancy++;
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            // check store queue
+            // this is the case where the address has already been computed
+            thisRS.entries[entry_index].op1_combined_val = pipeline.rr_op1_base;
+            thisRS.entries[entry_index].op1_ready = TRUE;
+
+            // since in direct mode the address is fully computed, can immediately search the store queue
+            bool found_data = false;
+            bool found_tag = false;
+            int current_old_bits = max_sq_size;
+            for (int i = 0; i < max_sq_size; i++)
+            {
+                if (sq.entries[i].entry_valid == TRUE && sq.entries[i].address == pipeline.rr_op1_base &&
+                    sq.entries[i].old_bits < current_old_bits)
                 {
-                    found_data = true;
-                    for (int j = 0; j < bytes_on_data_bus; j++)
+                    current_old_bits = sq.entries[i].old_bits;
+                    if (sq.entries[i].valid == TRUE)
                     {
-                        thisRS.entries[entry_index].op1_data = sq.entries[i].data[j];
+                        found_data = true;
+                        for (int j = 0; j < bytes_on_data_bus; j++)
+                        {
+                            thisRS.entries[entry_index].op1_data = sq.entries[i].data[j];
+                        }
+                        thisRS.entries[entry_index].op1_valid = TRUE;
                     }
-                    thisRS.entries[entry_index].op1_valid = TRUE;
-                }
-                else
-                {
-                    found_tag = true;
-                    thisRS.entries[entry_index].op1_mem_alias = sq.entries[i].tag;
-                    thisRS.entries[entry_index].op1_mem_alias_valid = TRUE;
+                    else
+                    {
+                        found_tag = true;
+                        thisRS.entries[entry_index].op1_mem_alias = sq.entries[i].tag;
+                        thisRS.entries[entry_index].op1_mem_alias_valid = TRUE;
+                    }
                 }
             }
-        }
 
-        // allocate entry in load queue if store queue search failed
-        // need address, and some form of alias to connect the data in load queue to the
-        // operand in the RS entry
-        if (found_data == false && found_tag == false)
-        {
-            int alias = mempool.get();
-            for (int i = 0; i < max_lq_size; i++)
+            // allocate entry in load queue if store queue search failed
+            // need address, and some form of alias to connect the data in load queue to the
+            // operand in the RS entry
+            if (found_data == false && found_tag == false)
             {
-                if (lq.entries[i].entry_valid == FALSE)
+                int alias = mempool.get();
+                for (int i = 0; i < max_lq_size; i++)
                 {
-                    lq.entries[i].entry_valid = TRUE;
-                    lq.entries[i].address_valid = TRUE;
-                    lq.entries[i].address = pipeline.rr_op1_base;
-                    lq.entries[i].old_bits = lq.occupancy;
-                    lq.occupancy++;
-                    lq.entries[i].valid = FALSE;
-                    lq.entries[i].tag = alias;
+                    if (lq.entries[i].entry_valid == FALSE)
+                    {
+                        lq.entries[i].entry_valid = TRUE;
+                        lq.entries[i].address_valid = TRUE;
+                        lq.entries[i].address = pipeline.rr_op1_base;
+                        lq.entries[i].old_bits = lq.occupancy;
+                        lq.occupancy++;
+                        lq.entries[i].valid = FALSE;
+                        lq.entries[i].tag = alias;
+                        break;
+                    }
+                }
+                thisRS.entries[entry_index].op1_load_alias = alias;
+                thisRS.entries[entry_index].op1_load_alias_valid = TRUE;
+            }
+
+            // allocate entry in store queue
+            // need address, and the store tag of the RS entry to receive the data
+            for (int i = 0; i < max_sq_size; i++)
+            {
+                if (sq.entries[i].entry_valid == FALSE)
+                {
+                    sq.entries[i].entry_valid = TRUE;
+                    sq.entries[i].address_valid = TRUE;
+                    sq.entries[i].address = pipeline.rr_op1_base;
+                    sq.entries[i].old_bits = sq.occupancy;
+                    sq.occupancy++;
+                    sq.entries[i].valid = FALSE;
+                    sq.entries[i].tag = thisRS.entries[entry_index].store_tag;
                     break;
                 }
             }
-            thisRS.entries[entry_index].op1_load_alias = alias;
-            thisRS.entries[entry_index].op1_load_alias_valid = TRUE;
         }
-
-        // allocate entry in store queue
-        // need address, and the store tag of the RS entry to receive the data
-        for (int i = 0; i < max_sq_size; i++)
+        else if (pipeline.rr_op1_addr_mode == indirect ||
+                pipeline.rr_op1_addr_mode == based ||
+                pipeline.rr_op1_addr_mode == indexed ||
+                pipeline.rr_op1_addr_mode == based_indexed ||
+                pipeline.rr_op1_addr_mode == based_indexed_disp)
         {
-            if (sq.entries[i].entry_valid == FALSE)
-            {
-                sq.entries[i].entry_valid = TRUE;
-                sq.entries[i].address_valid = TRUE;
-                sq.entries[i].address = pipeline.rr_op1_base;
-                sq.entries[i].old_bits = sq.occupancy;
-                sq.occupancy++;
-                sq.entries[i].valid = FALSE;
-                sq.entries[i].tag = thisRS.entries[entry_index].store_tag;
-                break;
-            }
+            thisRS.entries[entry_index].old_bits = thisRS.occupancy;
+            thisRS.occupancy++;
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            thisRS.entries[entry_index].op1_mem_alias_valid = FALSE;
+            thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
+            thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
+            thisRS.entries[entry_index].op1_index_valid = rat.valid[pipeline.rr_op1_index];
+            thisRS.entries[entry_index].op1_index_tag = rat.tag[pipeline.rr_op1_index];
+            thisRS.entries[entry_index].op1_index_val = rat.val[pipeline.rr_op1_index];
+            thisRS.entries[entry_index].op1_scale = pipeline.rr_op1_scale;
+            thisRS.entries[entry_index].op1_imm = pipeline.rr_op1_disp;
+            thisRS.entries[entry_index].op1_ready = FALSE;
+            thisRS.entries[entry_index].op1_load_alias_valid = FALSE;
+            thisRS.entries[entry_index].op1_valid = FALSE;
         }
-    }
-    else if (pipeline.rr_op1_addr_mode == indirect ||
-             pipeline.rr_op1_addr_mode == based ||
-             pipeline.rr_op1_addr_mode == indexed ||
-             pipeline.rr_op1_addr_mode == based_indexed ||
-             pipeline.rr_op1_addr_mode == based_indexed_disp)
-    {
-        thisRS.entries[entry_index].old_bits = thisRS.occupancy;
-        thisRS.occupancy++;
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op1_mem_alias_valid = FALSE;
-        thisRS.entries[entry_index].op1_addr_mode = pipeline.rr_op1_addr_mode;
-        thisRS.entries[entry_index].op1_base_valid = rat.valid[pipeline.rr_op1_base];
-        thisRS.entries[entry_index].op1_base_tag = rat.tag[pipeline.rr_op1_base];
-        thisRS.entries[entry_index].op1_base_val = rat.val[pipeline.rr_op1_base];
-        thisRS.entries[entry_index].op1_index_valid = rat.valid[pipeline.rr_op1_index];
-        thisRS.entries[entry_index].op1_index_tag = rat.tag[pipeline.rr_op1_index];
-        thisRS.entries[entry_index].op1_index_val = rat.val[pipeline.rr_op1_index];
-        thisRS.entries[entry_index].op1_scale = pipeline.rr_op1_scale;
-        thisRS.entries[entry_index].op1_imm = pipeline.rr_op1_disp;
-        thisRS.entries[entry_index].op1_ready = FALSE;
-        thisRS.entries[entry_index].op1_load_alias_valid = FALSE;
-        thisRS.entries[entry_index].op1_valid = FALSE;
-    }
-    // operand 2 (source)
-    if (pipeline.rr_op2_addr_mode == immediate)
-    {
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
-        thisRS.entries[entry_index].op2_ready = TRUE;
-        thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
-    }
-    else if (pipeline.rr_op2_addr_mode == reg)
-    {
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
-        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
-        thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
-        thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
-        if (rat.valid[pipeline.rr_op2_base] == TRUE)
+        // operand 2 (source)
+        if (pipeline.rr_op2_addr_mode == immediate)
         {
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
             thisRS.entries[entry_index].op2_ready = TRUE;
-            thisRS.entries[entry_index].op2_combined_val = rat.val[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
         }
-    }
-    else if (pipeline.rr_op2_addr_mode == direct)
-    {
-        // check store queue
-        // if there's a match, propagate that alias to RS
-        // otherwise, allocate entry in load queue and propagate that alias to RS
-
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        // check store queue
-        // this is the case where the address has already been computed
-        thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
-        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
-        thisRS.entries[entry_index].op2_ready = TRUE;
-
-        // since in direct mode the address is fully computed, can immediately search the store queue
-        bool found_data = false;
-        bool found_tag = false;
-        int current_old_bits = max_sq_size;
-        for (int i = 0; i < max_sq_size; i++)
+        else if (pipeline.rr_op2_addr_mode == reg)
         {
-            if (sq.entries[i].entry_valid == TRUE && sq.entries[i].address == pipeline.rr_op2_base &&
-                sq.entries[i].old_bits < current_old_bits)
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
+            thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
+            if (rat.valid[pipeline.rr_op2_base] == TRUE)
             {
-                current_old_bits = sq.entries[i].old_bits;
-                if (sq.entries[i].valid == TRUE)
+                thisRS.entries[entry_index].op2_ready = TRUE;
+                thisRS.entries[entry_index].op2_combined_val = rat.val[pipeline.rr_op2_base];
+            }
+        }
+        else if (pipeline.rr_op2_addr_mode == direct)
+        {
+            // check store queue
+            // if there's a match, propagate that alias to RS
+            // otherwise, allocate entry in load queue and propagate that alias to RS
+
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            // check store queue
+            // this is the case where the address has already been computed
+            thisRS.entries[entry_index].op2_combined_val = pipeline.rr_op2_base;
+            thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op2_addr_mode;
+            thisRS.entries[entry_index].op2_ready = TRUE;
+
+            // since in direct mode the address is fully computed, can immediately search the store queue
+            bool found_data = false;
+            bool found_tag = false;
+            int current_old_bits = max_sq_size;
+            for (int i = 0; i < max_sq_size; i++)
+            {
+                if (sq.entries[i].entry_valid == TRUE && sq.entries[i].address == pipeline.rr_op2_base &&
+                    sq.entries[i].old_bits < current_old_bits)
                 {
-                    found_data = true;
-                    for (int j = 0; j < bytes_on_data_bus; j++)
+                    current_old_bits = sq.entries[i].old_bits;
+                    if (sq.entries[i].valid == TRUE)
                     {
-                        thisRS.entries[entry_index].op2_data = sq.entries[i].data[j];
+                        found_data = true;
+                        for (int j = 0; j < bytes_on_data_bus; j++)
+                        {
+                            thisRS.entries[entry_index].op2_data = sq.entries[i].data[j];
+                        }
+                        thisRS.entries[entry_index].op2_valid = TRUE;
                     }
-                    thisRS.entries[entry_index].op2_valid = TRUE;
-                }
-                else
-                {
-                    found_tag = true;
-                    thisRS.entries[entry_index].op2_mem_alias = sq.entries[i].tag;
-                    thisRS.entries[entry_index].op2_mem_alias_valid = TRUE;
+                    else
+                    {
+                        found_tag = true;
+                        thisRS.entries[entry_index].op2_mem_alias = sq.entries[i].tag;
+                        thisRS.entries[entry_index].op2_mem_alias_valid = TRUE;
+                    }
                 }
             }
-        }
 
-        // allocate entry in load queue if store queue search failed
-        // need address, and some form of alias to connect the data in load queue to the
-        // operand in the RS entry
-        if (found_data == false && found_tag == false)
-        {
-            int alias = mempool.get();
-            for (int i = 0; i < max_lq_size; i++)
+            // allocate entry in load queue if store queue search failed
+            // need address, and some form of alias to connect the data in load queue to the
+            // operand in the RS entry
+            if (found_data == false && found_tag == false)
             {
-                if (lq.entries[i].entry_valid == FALSE)
+                int alias = mempool.get();
+                for (int i = 0; i < max_lq_size; i++)
                 {
-                    lq.entries[i].entry_valid = TRUE;
-                    lq.entries[i].address_valid = TRUE;
-                    lq.entries[i].address = pipeline.rr_op1_base;
-                    lq.entries[i].old_bits = lq.occupancy;
-                    lq.occupancy++;
-                    lq.entries[i].valid = FALSE;
-                    lq.entries[i].tag = alias;
-                    break;
+                    if (lq.entries[i].entry_valid == FALSE)
+                    {
+                        lq.entries[i].entry_valid = TRUE;
+                        lq.entries[i].address_valid = TRUE;
+                        lq.entries[i].address = pipeline.rr_op1_base;
+                        lq.entries[i].old_bits = lq.occupancy;
+                        lq.occupancy++;
+                        lq.entries[i].valid = FALSE;
+                        lq.entries[i].tag = alias;
+                        break;
+                    }
                 }
+                thisRS.entries[entry_index].op2_load_alias = alias;
+                thisRS.entries[entry_index].op2_load_alias_valid = TRUE;
             }
-            thisRS.entries[entry_index].op2_load_alias = alias;
-            thisRS.entries[entry_index].op2_load_alias_valid = TRUE;
         }
-    }
-    else if (pipeline.rr_op2_addr_mode == indirect ||
-             pipeline.rr_op2_addr_mode == based ||
-             pipeline.rr_op2_addr_mode == indexed ||
-             pipeline.rr_op2_addr_mode == based_indexed ||
-             pipeline.rr_op2_addr_mode == based_indexed_disp)
-    {
-        thisRS.entries[entry_index].old_bits = thisRS.occupancy;
-        thisRS.occupancy++;
-        thisRS.entries[entry_index].entry_valid = TRUE;
-        thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
-        thisRS.entries[entry_index].op2_mem_alias_valid = FALSE;
-        thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op1_addr_mode;
-        thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
-        thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
-        thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
-        thisRS.entries[entry_index].op2_index_valid = rat.valid[pipeline.rr_op2_index];
-        thisRS.entries[entry_index].op2_index_tag = rat.tag[pipeline.rr_op2_index];
-        thisRS.entries[entry_index].op2_index_val = rat.val[pipeline.rr_op2_index];
-        thisRS.entries[entry_index].op2_scale = pipeline.rr_op2_scale;
-        thisRS.entries[entry_index].op2_imm = pipeline.rr_op2_disp;
-        thisRS.entries[entry_index].op2_ready = FALSE;
-        thisRS.entries[entry_index].op2_load_alias_valid = FALSE;
-        thisRS.entries[entry_index].op2_valid = FALSE;
+        else if (pipeline.rr_op2_addr_mode == indirect ||
+                pipeline.rr_op2_addr_mode == based ||
+                pipeline.rr_op2_addr_mode == indexed ||
+                pipeline.rr_op2_addr_mode == based_indexed ||
+                pipeline.rr_op2_addr_mode == based_indexed_disp)
+        {
+            thisRS.entries[entry_index].old_bits = thisRS.occupancy;
+            thisRS.occupancy++;
+            thisRS.entries[entry_index].entry_valid = TRUE;
+            thisRS.entries[entry_index].updated_flags = pipeline.rr_updated_flags;
+            thisRS.entries[entry_index].op2_mem_alias_valid = FALSE;
+            thisRS.entries[entry_index].op2_addr_mode = pipeline.rr_op1_addr_mode;
+            thisRS.entries[entry_index].op2_base_valid = rat.valid[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_base_tag = rat.tag[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_base_val = rat.val[pipeline.rr_op2_base];
+            thisRS.entries[entry_index].op2_index_valid = rat.valid[pipeline.rr_op2_index];
+            thisRS.entries[entry_index].op2_index_tag = rat.tag[pipeline.rr_op2_index];
+            thisRS.entries[entry_index].op2_index_val = rat.val[pipeline.rr_op2_index];
+            thisRS.entries[entry_index].op2_scale = pipeline.rr_op2_scale;
+            thisRS.entries[entry_index].op2_imm = pipeline.rr_op2_disp;
+            thisRS.entries[entry_index].op2_ready = FALSE;
+            thisRS.entries[entry_index].op2_load_alias_valid = FALSE;
+            thisRS.entries[entry_index].op2_valid = FALSE;
+        }
     }
     stations[pipeline.rr_operation] = thisRS;
     for (int i = 0; i < rob_size; i++)
@@ -2038,10 +2093,12 @@ void register_rename_stage()
             rob.entries[i].executed = FALSE;
             rob.entries[i].instruction_ID = globalID;
             rob.entries[i].store_tag = alias;
+            rob.entries[i].halt = pipeline.rr_halt;
             break;
         }
     }
     thisRS.entries[entry_index].instruction_ID = globalID;
+    thisRS.entries[entry_index].mode32_16 = pipeline.rr32_16;
     cat.makeAliases(pipeline.rr_updated_flags, alias);
     globalID++;
 }
@@ -2077,6 +2134,8 @@ void addgen_branch_stage()
     new_pipeline.rr_op2_scale = pipeline.agbr_op2_scale;
     new_pipeline.rr_op2_disp = pipeline.agbr_op2_disp;
     new_pipeline.rr_op2_addr_mode = pipeline.agbr_cs[op2_addr_mode];
+    new_pipeline.rr32_16 = pipeline.agbr32_16;
+    new_pipeline.rr_halt = pipeline.agbr_halt;
 }
 
 #define operationRows 18
@@ -2352,9 +2411,14 @@ void decode_stage()
     new_pipeline.agbr_op2_scale = scale;
     new_pipeline.agbr_op1_disp = disp;
     new_pipeline.agbr_op2_disp = disp;
+    new_pipeline.agbr32_16 = pipeline.decode_is_prefix;
     // latch offset and valid
     new_pipeline.agbr_offset = pipeline.decode_offset;
     new_pipeline.agbr_valid = pipeline.decode_valid;
+
+    if(pipeline.decode_opcode==0xF4){
+        new_pipeline.agbr_halt = 1;
+    }
 }
 
 #define max_instruction_length 15
@@ -2387,7 +2451,7 @@ void predecode_stage()
             len++;
             new_pipeline.decode_is_prefix = 0;
         }
-        if (!(opcode == 0x05 || opcode == 0x04))
+        if (!(opcode == 0x05 || opcode == 0x04 || opcode== 0xF4))
         { // if an instruction tha requires a mod/rm byte
             len += 1;
             new_pipeline.decode_is_modrm = 1;
