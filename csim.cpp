@@ -1,15 +1,3 @@
-// todo:
-/*
-RAT - done (sahil)
-FAT - done (sahil)
-MAT - this is just the LSQ (sahil)
-LOAD/STORE QUEUE
-BRANCH PREDICTOR
-SPECULATIVE EXECUTED BUFFER - done (sahil)
-Remove read write from mshr and mshr handling functions and pre mshr entries - done (sahil)
-ROB needs to account for speculatively executed so that wrong entries get cleared properly - done (sahil)
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2309,6 +2297,39 @@ void decode_stage()
             }
         }
     }
+
+    //SIB LOGIC
+    if(new_pipeline.agbr_cs[op1_addr_mode]==2){
+        if((mod==0 && rm == 5)||(mod==0 && rm ==4 && index ==4 && base == 5)){
+            new_pipeline.agbr_cs[op1_addr_mode]=2;
+        }else if(mod==0 && rm != 4 && rm != 5){
+            new_pipeline.agbr_cs[op1_addr_mode]=3;
+        }else if((mod == 0 && rm == 4 && index ==4 && base != 5) || ((mod == 1 || mod == 2) && rm == 4 && index == 4) || ((mod == 1 || mod == 2) && rm == 4)){
+            new_pipeline.agbr_cs[op1_addr_mode]=4;
+        }else if(mod == 0 && rm == 4 && index != 4 && base == 5){
+            new_pipeline.agbr_cs[op1_addr_mode]=5;
+        }else if(mod == 0 && rm == 4 && index != 4 && base != 5){
+            new_pipeline.agbr_cs[op1_addr_mode]=6;
+        }else if((mod == 1 || mod == 2) && rm == 4 && index != 4){
+            new_pipeline.agbr_cs[op1_addr_mode]=7;
+        }
+    }
+    if(new_pipeline.agbr_cs[op2_addr_mode]==2){
+        if((mod==0 && rm == 5)||(mod==0 && rm ==4 && index ==4 && base == 5)){
+            new_pipeline.agbr_cs[op2_addr_mode]=2;
+        }else if(mod==0 && rm != 4 && rm != 5){
+            new_pipeline.agbr_cs[op2_addr_mode]=3;
+        }else if((mod == 0 && rm == 4 && index ==4 && base != 5) || ((mod == 1 || mod == 2) && rm == 4 && index == 4) || ((mod == 1 || mod == 2) && rm == 4)){
+            new_pipeline.agbr_cs[op2_addr_mode]=4;
+        }else if(mod == 0 && rm == 4 && index != 4 && base == 5){
+            new_pipeline.agbr_cs[op2_addr_mode]=5;
+        }else if(mod == 0 && rm == 4 && index != 4 && base != 5){
+            new_pipeline.agbr_cs[op2_addr_mode]=6;
+        }else if((mod == 1 || mod == 2) && rm == 4 && index != 4){
+            new_pipeline.agbr_cs[op2_addr_mode]=7;
+        }
+    }
+
     // search operandLUT
     int op1base_selector, op2base_selector;
     // printf("hello %d\n",pipeline.decode_opcode);
@@ -2455,6 +2476,7 @@ void predecode_stage()
         { // if an instruction tha requires a mod/rm byte
             len += 1;
             new_pipeline.decode_is_modrm = 1;
+            printf("HELLO\n\n\n\n");
             unsigned char mod_rm = pipeline.predecode_potential[instIndex];
             instIndex++;
             new_pipeline.decode_modrm = mod_rm;
@@ -2994,6 +3016,17 @@ void station_printer()
             }
         }
         printf("\n");
+    }
+}
+
+void lsqueue_printer(){
+    printf("LOAD QUEUE\n");
+    for(int i = 0; i < max_lq_size;i++){
+
+    }
+    printf("STORE QUEUE\n");
+    for(int i = 0; i < max_lq_size;i++){
+        
     }
 }
 
