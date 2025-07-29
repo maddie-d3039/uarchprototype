@@ -31,6 +31,7 @@ void bus_printer();
 void rat_printer();
 void station_printer();
 void rob_printer();
+void lsqueue_printer();
 void cache_printer();
 
 #define control_store_rows 20 // arbitrary
@@ -390,10 +391,10 @@ typedef struct PipeState_Entry_Struct
         decode_offset, decode_is_prefix, decode_prefix, decode_opcode,
         decode_is_modrm, decode_modrm, decode_is_sib, decode_sib, decode_dispimm[dispimm_size],
         decode_1bdisp, decode_4bdisp, decode_1bimm, decode_2bimm, decode_4bimm,
-        agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP, agbr_halt,
+        agbr_valid, agbr_cs[num_control_store_bits], agbr_NEIP, agbr_halt, agbr_opcode,
         agbr_op1_base, agbr_op1_index, agbr_op1_scale, agbr_op1_disp,
         agbr_op2_base, agbr_op2_index, agbr_op2_scale, agbr_op2_disp, agbr_offset, agbr32_16, //0 is 32 bits, 1 is 16 bits
-        rr_valid, rr_operation, rr_updated_flags, rr32_16, rr_halt,
+        rr_valid, rr_operation, rr_updated_flags, rr32_16, rr_halt, rr_cat_alias,
         rr_op1_base, rr_op1_index, rr_op1_scale, rr_op1_disp, rr_op1_addr_mode,
         rr_op2_base, rr_op2_index, rr_op2_scale, rr_op2_disp, rr_op2_addr_mode;
 
@@ -701,6 +702,11 @@ void get_command(FILE *dumpsim_file)
     case 'p':
     case 'P':
         rat_printer();
+        break;
+
+    case 'l':
+    case 'L':
+        lsqueue_printer();
         break;
 
     case 'c':
@@ -1023,12 +1029,15 @@ MSHR mshr;
 
 typedef struct SpecExe_Entry_Struct
 {
-    int valid, not_taken_target, taken_target, prediction, flag_alias;
+    int valid, not_taken_target, taken_target, prediction, 
+    flagTags[Flag_Count], flagValues[Flag_Count], flagValid[Flag_Count];
 } SpecExe_Entry;
 typedef struct SpecExeTracker_Struct
 {
     SpecExe_Entry entries[spec_exe_tracker_size];
 } SpecExeTracker;
+
+SpecExeTracker br_tracker;
 
 // Seralizers
 #define max_serializer_occupancy 8
@@ -1071,7 +1080,7 @@ Deserializer deserializer;
 typedef struct ROB_Entry_Struct
 {
     int valid, old_bits, retired, executed, value, store_tag, speculative, speculation_tag;
-    int instruction_ID, flagResults, halt;
+    int instruction_ID, flagResults, halt, cat_alias;
 } ROB_Entry;
 typedef struct ROB_Struct
 {
@@ -1294,7 +1303,7 @@ bool dcache_paste(int address, int data[cache_line_size])
 
 // stages
 
-int rob_broadcast_value, rob_broadcast_tag;
+int rob_broadcast_value, rob_broadcast_tag, rob_broadcast_cat_alias;
 void writeback_stage()
 {
     // update to account for resteering/clearing on mispredicts
@@ -1308,6 +1317,7 @@ void writeback_stage()
             }
             rob_broadcast_value = rob.entries[i].value;
             rob_broadcast_tag = rob.entries[i].store_tag;
+            rob_broadcast_cat_alias = rob.entries[i].cat_alias;
             // rat broadcast
             for (int j = 0; j < GPR_Count; j++)
             {
@@ -1320,7 +1330,7 @@ void writeback_stage()
             //
             for (int j = 0; j < Flag_Count; j++)
             {
-                if (cat.valid[j] == FALSE && cat.tag[j] == rob_broadcast_tag)
+                if (cat.valid[j] == FALSE && cat.tag[j] ==rob_broadcast_cat_alias)
                 {
                     cat.val[j] = ((rob.entries[i].flagResults>>j)&0x1);
                     cat.valid[j] = TRUE;
@@ -1895,7 +1905,7 @@ void register_rename_stage()
             // operand in the RS entry
             if (found_data == false && found_tag == false)
             {
-                int alias = mempool.get();
+                int mem_alias = mempool.get();
                 for (int i = 0; i < max_lq_size; i++)
                 {
                     if (lq.entries[i].entry_valid == FALSE)
@@ -1906,11 +1916,11 @@ void register_rename_stage()
                         lq.entries[i].old_bits = lq.occupancy;
                         lq.occupancy++;
                         lq.entries[i].valid = FALSE;
-                        lq.entries[i].tag = alias;
+                        lq.entries[i].tag = mem_alias;
                         break;
                     }
                 }
-                thisRS.entries[entry_index].op1_load_alias = alias;
+                thisRS.entries[entry_index].op1_load_alias = mem_alias;
                 thisRS.entries[entry_index].op1_load_alias_valid = TRUE;
             }
 
@@ -1954,6 +1964,22 @@ void register_rename_stage()
             thisRS.entries[entry_index].op1_ready = FALSE;
             thisRS.entries[entry_index].op1_load_alias_valid = FALSE;
             thisRS.entries[entry_index].op1_valid = FALSE;
+            for(int i=0;i<max_lq_size;i++){
+                if(lq.entries[i].entry_valid==0){
+                    lq.entries[i].entry_valid=1;
+                    lq.entries[i].valid=0;
+                    lq.entries[i].old_bits=lq.occupancy;
+                    lq.occupancy++;
+                    if(pipeline.rr_op1_addr_mode == 2){
+                        lq.entries[i].address_valid=rat.valid[pipeline.rr_op1_base];
+                        lq.entries[i].address_tag=rat.tag[pipeline.rr_op1_base];
+                        lq.entries[i].address=rat.val[pipeline.rr_op1_base];
+                    }else{
+
+                    }
+                    break;
+                }
+            }
         }
         // operand 2 (source)
         if (pipeline.rr_op2_addr_mode == immediate)
@@ -2081,13 +2107,14 @@ void register_rename_stage()
             rob.entries[i].executed = FALSE;
             rob.entries[i].instruction_ID = globalID;
             rob.entries[i].store_tag = alias;
+            rob.entries[i].cat_alias = pipeline.rr_cat_alias;
             rob.entries[i].halt = pipeline.rr_halt;
             break;
         }
     }
     thisRS.entries[entry_index].instruction_ID = globalID;
     thisRS.entries[entry_index].mode32_16 = pipeline.rr32_16;
-    cat.makeAliases(pipeline.rr_updated_flags, alias);
+    //cat.makeAliases(pipeline.rr_updated_flags, alias);
     globalID++;
 }
 
@@ -2098,16 +2125,71 @@ void addgen_branch_stage()
         printf("agstall\n");
         return; // ***perhaps we can still predict even if stalling? worth discussing
     }
-    if (pipeline.agbr_valid && pipeline.agbr_cs[control_instruction_type])
+    if (pipeline.agbr_valid && pipeline.agbr_cs[is_control_instruction])
     { // add control store bit for this
-        bool prediction = branch_predictor->predict();
-        tempEIP = EIP; // store this EIP in case need to resteer
-        tempOffset = pipeline.agbr_offset;
-        if (prediction)
-        {
-            EIP = pipeline.agbr_NEIP + pipeline.agbr_offset;
+        if(!pipeline.agbr_cs[control_instruction_type]){
+
+        }else{
+            int desiredFlags[Flag_Count];
+            if(pipeline.agbr_opcode == 85 || pipeline.agbr_opcode == 75){
+                desiredFlags[ZF]=1;
+            }else if(pipeline.agbr_opcode == 87 || pipeline.agbr_opcode == 77){
+                desiredFlags[ZF]=1;
+                desiredFlags[CF]=1;
+            }
+
+            //compare desiredFlags to cat valid
+            int needToPredict=0;
+            int ZFtag=-1, CFtag=-1;
+            for(int i =0;i<Flag_Count;i++){
+                if(desiredFlags[i]==1){
+                    if(cat.valid[i]!=1){
+                        needToPredict=1;
+                        if(i==ZF){
+                            ZFtag=cat.tag[i];
+                        }else if(i==CF){
+                            CFtag=cat.tag[i];
+                        }
+                    }
+                }
+            }
+            if(needToPredict){
+
+                bool prediction = branch_predictor->predict();
+                tempEIP = EIP; // store this EIP in case need to resteer
+                tempOffset = pipeline.agbr_offset;
+                if (prediction)
+                {
+                    EIP = pipeline.agbr_NEIP + pipeline.agbr_offset;
+                }
+                // something to let us know we are spec executing
+                
+                for(int i =0;i<spec_exe_tracker_size;i++){
+                    if(br_tracker.entries[i].valid!=1){
+                        br_tracker.entries[i].valid=1;
+                        br_tracker.entries[i].not_taken_target = pipeline.agbr_NEIP;
+                        br_tracker.entries[i].taken_target = pipeline.agbr_NEIP + pipeline.agbr_offset;
+                        br_tracker.entries[i].prediction = prediction;
+                        for(int j =0;j<Flag_Count;j++){
+                            if(desiredFlags[j]==1 && j == ZF){
+                                br_tracker.entries[i].flagTags[j] = ZFtag;
+                            }else if(desiredFlags[j]==1 && j == CF){
+                                br_tracker.entries[i].flagTags[j] = CFtag;
+                            }else{
+                                br_tracker.entries[i].flagTags[j] = -1;
+                            }
+
+                            if(ZFtag==-1){
+                                br_tracker.entries[i].flagValid[ZF]=1;
+                            }
+                            if(CFtag==-1){
+                                br_tracker.entries[i].flagValid[CF]=1;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        // something to let us know we are spec executing
     }
     new_pipeline.rr_valid = pipeline.agbr_valid;
     new_pipeline.rr_operation = pipeline.agbr_cs[operation];
@@ -2123,6 +2205,9 @@ void addgen_branch_stage()
     new_pipeline.rr_op2_disp = pipeline.agbr_op2_disp;
     new_pipeline.rr_op2_addr_mode = pipeline.agbr_cs[op2_addr_mode];
     new_pipeline.rr32_16 = pipeline.agbr32_16;
+    int cat_alias = cat.getAlias();
+    new_pipeline.rr_cat_alias = cat_alias;
+    cat.makeAliases(new_pipeline.rr_updated_flags, cat_alias);
     new_pipeline.rr_halt = pipeline.agbr_halt;
 }
 
@@ -2432,6 +2517,7 @@ void decode_stage()
     new_pipeline.agbr_op2_scale = scale;
     new_pipeline.agbr_op1_disp = disp;
     new_pipeline.agbr_op2_disp = disp;
+    new_pipeline.agbr_opcode = pipeline.decode_opcode;
     new_pipeline.agbr32_16 = pipeline.decode_is_prefix;
     // latch offset and valid
     new_pipeline.agbr_offset = pipeline.decode_offset;
@@ -3022,11 +3108,21 @@ void station_printer()
 void lsqueue_printer(){
     printf("LOAD QUEUE\n");
     for(int i = 0; i < max_lq_size;i++){
-
+        printf("EV %d AV %d AT %d A 0x%x \n", lq.entries[i].entry_valid, lq.entries[i].address_valid, lq.entries[i].address_tag, lq.entries[i].address);
+        printf("O %d V %d T %d D:\n", lq.entries[i].old_bits, lq.entries[i].valid, lq.entries[i].tag);
+        for(int j=0;j<bytes_on_data_bus;j++){
+            printf("0x%x ", lq.entries[i].data[j]);
+        }
+        printf("\n");
     }
     printf("STORE QUEUE\n");
-    for(int i = 0; i < max_lq_size;i++){
-        
+    for(int i = 0; i < max_sq_size;i++){
+        printf("EV %d AV %d AT %d A 0x%x \n", sq.entries[i].entry_valid, sq.entries[i].address_valid, sq.entries[i].address_tag, sq.entries[i].address);
+        printf("MA %x O %d W %d V %d T %d D:\n", sq.entries[i].matchAddress, sq.entries[i].old_bits, sq.entries[i].written, sq.entries[i].valid, sq.entries[i].tag);
+        for(int j=0;j<bytes_on_data_bus;j++){
+            printf("0x%x ", sq.entries[i].data[j]);
+        }
+        printf("\n");
     }
 }
 
