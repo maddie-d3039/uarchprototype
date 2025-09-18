@@ -1,6 +1,6 @@
-#include "config.h"
-#include "cpu.h"
-#include "ibuffer.h"
+#include "../inc/config.h"
+#include "../inc/cpu.h"
+#include "../inc/ibuffer.h"
 
 void ibuffer::operate(int EIP, cpu::PipeState_Entry& new_pipeline){
 

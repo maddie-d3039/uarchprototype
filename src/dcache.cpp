@@ -1,4 +1,4 @@
-#include "dcache.h"
+#include "../inc/dcache.h"
 
 cacheline *dcache::dcache_access(int addr)
 {

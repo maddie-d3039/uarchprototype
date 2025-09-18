@@ -1,4 +1,4 @@
-#include "config.h"
+#include "../inc/config.h"
 
 class RAT
 {

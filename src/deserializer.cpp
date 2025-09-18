@@ -1,5 +1,5 @@
-#include "cpu.h"
-#include "deserializer.h"
+#include "../inc/cpu.h"
+#include "../inc/deserializer.h"
 
 int deserializer::allocate(){
     for(deserializer_entry entry : entries){

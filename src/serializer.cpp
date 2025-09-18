@@ -1,5 +1,5 @@
-#include "serializer.h"
-#include "cpu.h"
+#include "../inc/serializer.h"
+#include "../inc/cpu.h"
 int serializer::allocate(int address, int data[cache_line_size]){
     for(serializer_entry entry : entries){
         if(!entry.valid){

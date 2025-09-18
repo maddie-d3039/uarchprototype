@@ -1,5 +1,5 @@
-#include "config.h"
-#include "cpu.h"
+#include "../inc/config.h"
+#include "../inc/cpu.h"
 
 void cpu::fetch_stage(){
     the_ibuffer->operate(EIP, &new_pipeline);

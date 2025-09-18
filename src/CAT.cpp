@@ -1,4 +1,4 @@
-#include "config.h"
+#include "../inc/config.h"
 class CAT{
     public:
 enum conditionCodes{ //condition codes changed by the subset of instructions

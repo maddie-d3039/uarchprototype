@@ -1,5 +1,5 @@
 // address mapping: TTT TTT TII IBO OOO
-#include "config.h"
+#include "../inc/config.h"
 #include <cmath>
 #include <optional> 
 

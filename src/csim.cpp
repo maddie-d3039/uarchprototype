@@ -5,7 +5,7 @@
 #include "BP.cpp"
 #include "RAT.cpp"
 #include "CAT.cpp"
-#include "config.h"
+#include "../inc/config.h"
 void fetch_stage();
 void predecode_stage();
 void decode_stage();
@@ -668,7 +668,7 @@ void get_command(FILE *dumpsim_file)
     char buffer[20];
     int start, stop, cycles;
 
-    printf("LC-3b-SIM> ");
+    printf("x86 Simulator");
 
     scanf("%s", buffer);
     printf("\n");
@@ -1073,7 +1073,6 @@ typedef struct Deserializer_Struct
     int occupancy;
 } Deserializer;
 
-Deserializer deserializer;
 
 // ROB
 
@@ -2562,7 +2561,7 @@ void predecode_stage()
         { // if an instruction tha requires a mod/rm byte
             len += 1;
             new_pipeline.decode_is_modrm = 1;
-            printf("HELLO\n\n\n\n");
+            //printf("HELLO\n\n\n\n");
             unsigned char mod_rm = pipeline.predecode_potential[instIndex];
             instIndex++;
             new_pipeline.decode_modrm = mod_rm;
@@ -2577,7 +2576,7 @@ void predecode_stage()
             {
                 new_pipeline.decode_is_sib = false;
             }
-            int displacement = mod_rm & 0b11000000;
+            int displacement = (mod_rm & 0b11000000) >> 6;
             if (displacement == 1)
             {
                 len++;

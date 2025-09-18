@@ -1,5 +1,5 @@
 
-#include "config.h"
+#include "../inc/config.h"
 class BP{
 int branchTable[1 << history_length]; //each history is 
 unsigned char BHR = 0;
