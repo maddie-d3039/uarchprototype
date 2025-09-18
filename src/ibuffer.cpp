@@ -52,11 +52,11 @@ void ibuffer::operate(int EIP, cpu::PipeState_Entry& new_pipeline){
                 mshr_preinserter(EIP, icache);
              }
              if(result.miss_reason == tlb_miss){
-                //something to stall? 
+                //something to translate? 
              }
         }
     }
-
+}
     ibuffer::invalidate(int length, int EIP){
         int offset = EIP % cache_line_size;
         if(length >= (cache_line_size - offset)){
@@ -68,4 +68,4 @@ void ibuffer::operate(int EIP, cpu::PipeState_Entry& new_pipeline){
 
 
 
-}
+
